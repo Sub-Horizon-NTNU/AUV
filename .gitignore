@@ -1,0 +1,18 @@
+# Lokal arbeidskopi av GitHub Wiki (eget Git-repo)
+AUV.wiki/
+
+# Midlertidige filer og lokale innstillinger
+tmp/
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+
+# Genererte filer
+build/
+dist/
+log/
