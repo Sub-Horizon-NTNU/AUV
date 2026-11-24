@@ -57,8 +57,8 @@
 - Current increment `cac4c46eaeb3673eb2e3ae03cdbe82ae06a90545` changes core scattering,
   example config, CSV and viewer: 5/5 ON, 3/3 OFF and independent CSV/render checks
   passed. Earlier baseline statements apply only to their commits. See README limits.
-- `visualization/wavefront.*` owns the coarse geometric one-way front. It stops at
-  retained contacts, not the range limit; absent continuation is not absorption.
+- `visualization/wavefront.*` owns the geometric one-way front. It propagates through
+  ideal mirror folds for the full Rmax/c window, independent of echo energy/hit budget.
 - Model caches 400 profiles/cloud and fixed combined scan reference. Channel changes
   must reselect eligible echoes, including transitions from an empty particle channel.
 - Those results do not validate later source changes, another platform or pool acoustics.
@@ -67,3 +67,8 @@
 - Keep viewer cache/state separate from rendering and graphics dependencies out of
   `sonar_core`. Marker motion is slowed playback, the purple point is an apparent
   location, and image/profile dB share the strongest combined bin over the entire scan.
+
+- Current UI/front baseline `a658584c17e1a642dc8e0b24b95cdac80ec34cc0`: 5/5 CTest,
+  review/format and multi-size render inspection passed; no complete GUI input automation.
+  `layout.*` owns native sizing; model owns camera, scan clock and marker visibility.
+  The 6144-ray front uses analytic folds/seam links. Particle visibility is display-only.
