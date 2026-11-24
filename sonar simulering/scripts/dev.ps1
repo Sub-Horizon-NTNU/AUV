@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Setup', 'Configure', 'Build', 'Test', 'Run', 'Scan', 'Debug')]
+    [ValidateSet('Setup', 'Configure', 'Build', 'Test', 'Run', 'Scan', 'Debug', 'View')]
     [string]$Action = 'Build'
 )
 
@@ -164,10 +164,20 @@ try {
     $configureArguments = @('-S', $projectRoot, '-B', $buildRoot, '-G', 'Ninja',
         "-DCMAKE_CXX_COMPILER=$($tools.Compiler)", "-DCMAKE_MAKE_PROGRAM=$($tools.Ninja)",
         '-DCMAKE_BUILD_TYPE=Debug', '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON')
+    if ($Action -eq 'View') {
+        $configureArguments += @('-DSONAR_BUILD_VIEWER=ON', "-DCMAKE_C_COMPILER=$(Join-Path (Split-Path $tools.Compiler -Parent) 'gcc.exe')")
+    } else {
+        $configureArguments += '-DSONAR_BUILD_VIEWER=OFF'
+    }
     Invoke-Checked $tools.CMake $configureArguments
     if ($Action -eq 'Configure') { exit 0 }
     Invoke-Checked $tools.CMake @('--build', $buildRoot)
-    if ($Action -eq 'Test') {
+    if ($Action -eq 'View') {
+        Push-Location $projectRoot
+        try {
+            Invoke-Checked (Join-Path $buildRoot 'sonar_viewer.exe') @('--config', (Join-Path $projectRoot 'examples\pool.cfg'))
+        } finally { Pop-Location }
+    } elseif ($Action -eq 'Test') {
         Invoke-Checked $tools.CTest @('--test-dir', $buildRoot, '--output-on-failure')
     } elseif ($Action -eq 'Debug') {
         [IO.Directory]::CreateDirectory($outputRoot) | Out-Null
