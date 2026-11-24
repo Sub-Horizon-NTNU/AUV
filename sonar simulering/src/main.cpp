@@ -19,7 +19,8 @@ void print_help() {
                  "  --output DIR     New CSV output directory (default ./output)\n"
                  "  --help           Show this help\n\n"
                  "Outputs: echoes.csv, paths.csv, profiles.csv. Existing files are preserved.\n"
-                 "Model: reciprocal backscatter paths in a 3D box, relative echo energy.\n"
+                 "Model: reciprocal surface paths plus optional single-particle returns; relative "
+                 "energy.\n"
                  "Defaults are illustrative, not measured pool dimensions or calibration.\n"
                  "No raylib GUI, AUV dynamics, IMU or DVL simulation in this step.\n";
 }
@@ -86,14 +87,15 @@ int main(int argc, char **argv) {
         const sonar::Config config =
             config_path ? sonar::read_config(*config_path) : sonar::Config{};
         sonar::write_csv(config, angle_grad, full_scan, output_directory);
-        std::cout << "Simulated " << (full_scan ? 400 : 1) << " stationary ping(s).\n"
-                  << "Pool: " << config.pool.length_m << " x " << config.pool.width_m << " x "
-                  << config.pool.depth_m << " m; sonar: (" << config.pose.position_m.x << ", "
-                  << config.pose.position_m.y << ", " << config.pose.position_m.z << ") m.\n"
-                  << "Range: " << sonar::minimum_range_m << ".." << config.settings.max_range_m
-                  << " m; sound speed: " << config.settings.sound_speed_m_s << " m/s.\n"
-                  << "CSV files: " << std::filesystem::absolute(output_directory).string() << '\n'
-                  << "Echo energy is relative; reciprocal backscatter paths only.\n";
+        std::cout
+            << "Simulated " << (full_scan ? 400 : 1) << " stationary ping(s).\n"
+            << "Pool: " << config.pool.length_m << " x " << config.pool.width_m << " x "
+            << config.pool.depth_m << " m; sonar: (" << config.pose.position_m.x << ", "
+            << config.pose.position_m.y << ", " << config.pose.position_m.z << ") m.\n"
+            << "Range: " << sonar::minimum_range_m << ".." << config.settings.max_range_m
+            << " m; sound speed: " << config.settings.sound_speed_m_s << " m/s.\n"
+            << "CSV files: " << std::filesystem::absolute(output_directory).string() << '\n'
+            << "Echo energy is relative; restricted surface paths and optional sparse particles.\n";
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "sonar_sim: " << error.what() << "\nUse --help for usage.\n";

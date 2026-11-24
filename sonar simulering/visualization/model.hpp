@@ -1,19 +1,34 @@
 #pragma once
 
 #include "sonar/simulator.hpp"
+#include "wavefront.hpp"
 
+#include <array>
+#include <cstddef>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace viewer {
 
 enum class Projection { Perspective, Top, Side };
+enum class Channel { Combined, Direct, Multipath, Volume };
 
-// Owns one cached stationary ping. Camera and playback changes do not resimulate it.
+// Owns a selected ping and all 400 stationary scan profiles. Display changes reuse the scan.
 struct Model {
     sonar::Config config;
     sonar::Config draft;
     sonar::Ping ping;
+    std::array<std::vector<sonar::RangeBin>, 400> scan;
+    std::vector<sonar::Vec3> particles;
+    double scan_reference{}; // Strongest combined range bin over all 400 stationary angles.
+    unsigned scan_revision{};
+    Channel channel{Channel::Combined};
+    double gain_db{};
+    double dynamic_range_db{80};
+    bool scattering_controls{};
+    bool wavefront_mode{};
+    GeometricWavefront wavefront;
     std::filesystem::path config_path;
     std::size_t selected{};
     double progress{};
@@ -27,11 +42,18 @@ struct Model {
     bool apply(const sonar::Config &candidate, unsigned angle);
     void reload();
     void change_angle(int delta);
+    void set_angle(unsigned angle);
+    void set_channel(Channel new_channel);
     void select(std::size_t index);
     void cycle_echo(int delta);
     void select_range(double range_m);
     void tick(double seconds);
     const sonar::Echo *echo() const;
+    bool accepts(const sonar::Echo &arrival) const;
+    double channel_energy(const sonar::RangeBin &bin) const;
+    double display_level(double energy) const;
+    // Local plan view: +x forward/up, +y left; normalized radius [0,1].
+    bool select_image(double local_x, double local_y);
 };
 
 sonar::Vec3 path_position(const sonar::Echo &echo, double fraction);

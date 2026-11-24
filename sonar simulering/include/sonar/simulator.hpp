@@ -42,19 +42,42 @@ struct Pose {
     double yaw_deg{};
 };
 
+enum class SurfaceModel { Legacy, Roughness };
+enum class EchoKind { Surface, Volume };
+
 struct Settings {
     double sound_speed_m_s{1480.0};
     double max_range_m{20.0};
     double transmit_duration_us{20.0};
     // Energy loss exp(-absorption_per_m * total_path_m), excluding boundary losses.
     double absorption_per_m{0.01};
-    // At a boundary, R*B goes to the backscatter model and R*(1-B) continues specularly.
+    // Legacy: R*B supplies backscatter and R*(1-B) continues specularly.
+    // Roughness: B controls only the diffuse return share; coherent return is angle dependent.
     double backscatter_fraction{0.1};
     unsigned horizontal_rays{3};
     unsigned vertical_rays{11};
     unsigned max_outward_hits{4};
     unsigned range_samples{600};
+    SurfaceModel surface_model{SurfaceModel::Legacy};
+    double frequency_hz{750000.0};
+    double surface_roughness_m{0.0002};
+    // Sparse single-scattering proxies, not homogeneous water reflectors.
+    unsigned volume_scatterers{};
+    unsigned volume_seed{42};
+    double volume_strength{0.001};
 };
+
+struct SurfaceResponse {
+    double coherent_share{};
+    double specular_return{};
+    double diffuse_return{};
+    double continuation{};
+};
+
+/// Heuristic reflected-energy shares before multiplying by the material energy coefficient R.
+/// Roughness uses a Gaussian coherent factor and a fixed 1 degree receiver acceptance lobe.
+/// Return + continuation <= 1; unreceived diffuse energy is discarded, not branched.
+SurfaceResponse surface_response(const Settings &settings, double incidence_cosine);
 
 struct Config {
     Pool pool;
@@ -73,6 +96,7 @@ struct PathVertex {
     Vec3 position_m;
     // Bit i marks Surface i. Zero marks the transmitter/receiver; ties mark all hit planes.
     std::uint8_t surface_mask{};
+    bool volume_scatter{}; // With mask zero, distinguishes a particle from the sonar endpoints.
 };
 
 struct Echo {
@@ -89,6 +113,8 @@ struct Echo {
     bool in_receive_window{};
     // Complete closed polyline: TX, outward contacts, reversed contacts, RX.
     std::vector<PathVertex> path;
+    EchoKind kind{EchoKind::Surface};
+    unsigned scatterer_id{}; // Meaningful only for Volume echoes; ray_id is then UINT_MAX.
 
     bool is_multipath() const;
 };
@@ -98,6 +124,7 @@ struct RangeBin {
     // Integrated relative energy in this bin; values are not hardware uint8 strengths.
     double direct_intensity{};
     double multipath_intensity{};
+    double volume_intensity{};
 };
 
 struct Ping {
@@ -111,9 +138,15 @@ struct Ping {
  * At every sampled outward hit, backscatter retraces the outward path. Earlier
  * contacts are specular in both directions. Asymmetric and purely specular
  * closed paths, interference, diffraction, side lobes and calibrated amplitudes
- * are NOT modeled. All interfaces use SI units except explicitly named angles.
+ * are NOT modeled. Optional volume echoes are straight single-particle roundtrips.
+ * Surface roughness/lobe and particle strength are relative heuristics, not calibrated
+ * transport or a frequency-dependent wave solver. All interfaces use SI units except angles.
  * Throws std::invalid_argument for invalid config or angle_grad outside [0,399].
  */
 Ping simulate_ping(const Config &config, unsigned angle_grad);
+
+/// Deterministic sparse point cloud inside the pool. MT19937 output is mapped explicitly
+/// to open-unit coordinates so the same seed produces the same positions across libraries.
+std::vector<Vec3> volume_points(const Config &config);
 
 } // namespace sonar

@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -130,7 +131,9 @@ void accumulate_profile(const Config &config, const Echo &echo, std::vector<Rang
         const double overlap =
             std::max(0.0, std::min(end, upper) - std::max({start, lower, minimum_range_m}));
         const double contribution = echo.relative_intensity * overlap / pulse_width_m;
-        if (echo.is_multipath()) {
+        if (echo.kind == EchoKind::Volume) {
+            profile[index].volume_intensity += contribution;
+        } else if (echo.is_multipath()) {
             profile[index].multipath_intensity += contribution;
         } else {
             profile[index].direct_intensity += contribution;
@@ -154,14 +157,18 @@ void trace_ray(const Config &config, Vec3 direction, unsigned ray_id, double azi
         outward_path.push_back({hit.position_m, hit.mask});
         const unsigned primary_axis = static_cast<unsigned>(hit.primary) / 2;
         const double incidence_cosine = std::abs(coordinate(direction, primary_axis));
-        const double terminal_energy =
-            reflection_coefficient(hit.primary, config.pool) * config.settings.backscatter_fraction;
+        const auto response = surface_response(config.settings, incidence_cosine);
+        const double terminal_energy = reflection_coefficient(hit.primary, config.pool) *
+                                       (response.specular_return + response.diffuse_return);
         const double spreading_range = std::max(reference_range_m, outward_distance);
         // Two-way energy spreading (r_ref/r)^4, clipped inside the arbitrary 1 m reference.
         const double relative_intensity =
-            ray_weight * specular_energy * specular_energy * terminal_energy * incidence_cosine *
-            incidence_cosine * std::pow(reference_range_m / spreading_range, 4.0) *
+            ray_weight * specular_energy * specular_energy * terminal_energy *
+            std::pow(reference_range_m / spreading_range, 4.0) *
             std::exp(-config.settings.absorption_per_m * 2.0 * outward_distance);
+        // Squared continuation is retained from the restricted reciprocal model. With
+        // receiver-aligned coherent energy consumed at earlier vertices, this is an
+        // effective path-weight heuristic, not an exact transport integral.
 
         Echo echo{ray_id,
                   hit_index,
@@ -187,8 +194,10 @@ void trace_ray(const Config &config, Vec3 direction, unsigned ray_id, double azi
             if ((hit.mask & (1U << face)) == 0) {
                 continue;
             }
+            const auto continuing =
+                surface_response(config.settings, std::abs(coordinate(direction, face / 2)));
             specular_energy *= reflection_coefficient(static_cast<Surface>(face), config.pool) *
-                               (1.0 - config.settings.backscatter_fraction);
+                               continuing.continuation;
             Vec3 normal{};
             if (face / 2 == 0) {
                 normal.x = 1.0;
@@ -206,7 +215,89 @@ void trace_ray(const Config &config, Vec3 direction, unsigned ray_id, double azi
     }
 }
 
+void scatter_volume(const Config &config, unsigned angle_grad, Ping &ping) {
+    if (config.settings.volume_scatterers == 0 || config.settings.volume_strength == 0.0) {
+        return;
+    }
+    const auto points = volume_points(config);
+    // Dot with local basis vectors is the inverse of the core's orthogonal pose rotation.
+    const Vec3 basis_x = rotate({1, 0, 0}, config.pose);
+    const Vec3 basis_y = rotate({0, 1, 0}, config.pose);
+    const Vec3 basis_z = rotate({0, 0, 1}, config.pose);
+    for (std::size_t index = 0; index < points.size(); ++index) {
+        const auto delta = points[index] - config.pose.position_m;
+        const double range = length(delta);
+        if (range < minimum_range_m || range >= config.settings.max_range_m) {
+            continue;
+        }
+        const Vec3 local{dot(delta, basis_x), dot(delta, basis_y), dot(delta, basis_z)};
+        const double azimuth = std::atan2(local.y, local.x) / degrees_to_radians;
+        const double elevation =
+            std::atan2(local.z, std::hypot(local.x, local.y)) / degrees_to_radians;
+        const double difference = std::remainder(azimuth - angle_grad * 0.9, 360.0);
+        if (std::abs(difference) > horizontal_beam_width_deg / 2 ||
+            std::abs(elevation) > vertical_beam_width_deg / 2) {
+            continue;
+        }
+        // Unit top-hat TX/RX gain inside the finite beam, independent of ray quadrature.
+        // Strength is an uncalibrated per-particle coefficient, not a bulk water property.
+        const double intensity =
+            config.settings.volume_strength *
+            std::pow(reference_range_m / std::max(reference_range_m, range), 4.0) *
+            std::exp(-config.settings.absorption_per_m * 2 * range);
+        Echo echo{std::numeric_limits<unsigned>::max(),
+                  1,
+                  1,
+                  azimuth,
+                  elevation,
+                  2 * range,
+                  2 * range / config.settings.sound_speed_m_s,
+                  range,
+                  intensity,
+                  true,
+                  {{config.pose.position_m, 0, false},
+                   {points[index], 0, true},
+                   {config.pose.position_m, 0, false}},
+                  EchoKind::Volume,
+                  static_cast<unsigned>(index)};
+        accumulate_profile(config, echo, ping.profile);
+        ping.echoes.push_back(std::move(echo));
+    }
+}
+
 } // namespace
+
+SurfaceResponse surface_response(const Settings &settings, double incidence_cosine) {
+    const double mu = std::clamp(incidence_cosine, 0.0, 1.0);
+    if (settings.surface_model == SurfaceModel::Legacy) {
+        return {0.0, 0.0, settings.backscatter_fraction * mu * mu,
+                1.0 - settings.backscatter_fraction};
+    }
+    const double wavelength = settings.sound_speed_m_s / settings.frequency_hz;
+    const double rayleigh = 4 * pi * settings.surface_roughness_m * mu / wavelength;
+    const double coherent = std::exp(-rayleigh * rayleigh);
+    // Angle between specularly reflected direction and reverse incident direction.
+    const double mismatch = std::acos(std::clamp(2 * mu * mu - 1.0, -1.0, 1.0));
+    constexpr double receiver_lobe_width_rad = degrees_to_radians; // Illustrative 1 degree sigma.
+    const double lobe = std::exp(-0.5 * std::pow(mismatch / receiver_lobe_width_rad, 2.0));
+    return {coherent, coherent * lobe, (1.0 - coherent) * settings.backscatter_fraction * mu * mu,
+            coherent * (1.0 - lobe)};
+}
+
+std::vector<Vec3> volume_points(const Config &config) {
+    validate(config);
+    std::mt19937 generator(config.settings.volume_seed);
+    const auto unit = [&generator] {
+        return (static_cast<double>(generator()) + 0.5) / 4294967296.0;
+    };
+    std::vector<Vec3> points;
+    points.reserve(config.settings.volume_scatterers);
+    for (unsigned index = 0; index < config.settings.volume_scatterers; ++index) {
+        points.push_back({unit() * config.pool.length_m, unit() * config.pool.width_m,
+                          unit() * config.pool.depth_m});
+    }
+    return points;
+}
 
 Vec3 operator+(Vec3 a, Vec3 b) {
     return {a.x + b.x, a.y + b.y, a.z + b.z};
@@ -282,10 +373,18 @@ void validate(const Config &config) {
     }
     require_count(config.settings.max_outward_hits, 1, 16, "max_outward_hits");
     require_count(config.settings.range_samples, 200, 1200, "range_samples");
+    if (config.settings.surface_model != SurfaceModel::Legacy &&
+        config.settings.surface_model != SurfaceModel::Roughness) {
+        throw std::invalid_argument("unsupported surface_model");
+    }
+    require_range(config.settings.frequency_hz, 500000, 1000000, "frequency_hz");
+    require_range(config.settings.surface_roughness_m, 0, 0.01, "surface_roughness_m");
+    require_count(config.settings.volume_scatterers, 0, 4096, "volume_scatterers");
+    require_range(config.settings.volume_strength, 0, 1, "volume_strength");
 }
 
 bool Echo::is_multipath() const {
-    return outward_hits > 1;
+    return kind == EchoKind::Surface && outward_hits > 1;
 }
 
 Ping simulate_ping(const Config &config, unsigned angle_grad) {
@@ -322,6 +421,7 @@ Ping simulate_ping(const Config &config, unsigned angle_grad) {
                       std::cos(elevation) / total_weight, ping);
         }
     }
+    scatter_volume(config, angle_grad, ping);
     return ping;
 }
 

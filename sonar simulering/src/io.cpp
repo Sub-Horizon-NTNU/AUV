@@ -82,12 +82,17 @@ Config read_config(std::istream &input) {
         {"transmit_duration_us", &config.settings.transmit_duration_us},
         {"absorption_per_m", &config.settings.absorption_per_m},
         {"backscatter_fraction", &config.settings.backscatter_fraction},
+        {"frequency_hz", &config.settings.frequency_hz},
+        {"surface_roughness_m", &config.settings.surface_roughness_m},
+        {"volume_strength", &config.settings.volume_strength},
     };
     const std::map<std::string, unsigned *> counts{
         {"horizontal_rays", &config.settings.horizontal_rays},
         {"vertical_rays", &config.settings.vertical_rays},
         {"max_outward_hits", &config.settings.max_outward_hits},
         {"range_samples", &config.settings.range_samples},
+        {"volume_scatterers", &config.settings.volume_scatterers},
+        {"volume_seed", &config.settings.volume_seed},
     };
 
     std::set<std::string> seen;
@@ -110,7 +115,15 @@ Config read_config(std::istream &input) {
             if (!seen.insert(key).second) {
                 throw std::invalid_argument("duplicate key");
             }
-            if (const auto field = numbers.find(key); field != numbers.end()) {
+            if (key == "surface_model") {
+                if (value == "legacy") {
+                    config.settings.surface_model = SurfaceModel::Legacy;
+                } else if (value == "roughness") {
+                    config.settings.surface_model = SurfaceModel::Roughness;
+                } else {
+                    throw std::invalid_argument("expected legacy or roughness");
+                }
+            } else if (const auto field = numbers.find(key); field != numbers.end()) {
                 *field->second = parse_number(value);
             } else if (const auto count_field = counts.find(key); count_field != counts.end()) {
                 *count_field->second = parse_count(value);
@@ -162,10 +175,10 @@ void write_csv(const Config &config, unsigned angle_grad, bool full_scan,
     auto profiles = output_file(profile_path);
     echoes << "ping_id,angle_grad,echo_id,ray_id,launch_azimuth_deg,launch_elevation_deg,"
               "outward_hits,interaction_count,is_multipath,total_path_m,travel_time_s,"
-              "apparent_range_m,relative_intensity,in_receive_window\n";
-    paths << "ping_id,echo_id,vertex_id,x_m,y_m,z_m,surface_mask,surfaces\n";
+              "apparent_range_m,relative_intensity,in_receive_window,echo_kind,scatterer_id\n";
+    paths << "ping_id,echo_id,vertex_id,x_m,y_m,z_m,surface_mask,surfaces,vertex_kind\n";
     profiles << "ping_id,angle_grad,bin_index,center_range_m,direct_intensity,"
-                "multipath_intensity,total_intensity\n";
+                "multipath_intensity,total_intensity,volume_intensity\n";
 
     const unsigned ping_count = full_scan ? 400U : 1U;
     for (unsigned ping_id = 0; ping_id < ping_count; ++ping_id) {
@@ -177,13 +190,23 @@ void write_csv(const Config &config, unsigned angle_grad, bool full_scan,
                    << echo.outward_hits << ',' << echo.interaction_count << ','
                    << echo.is_multipath() << ',' << echo.total_path_m << ',' << echo.travel_time_s
                    << ',' << echo.apparent_range_m << ',' << echo.relative_intensity << ','
-                   << echo.in_receive_window << '\n';
+                   << echo.in_receive_window << ','
+                   << (echo.kind == EchoKind::Volume ? "volume" : "surface") << ',';
+            if (echo.kind == EchoKind::Volume) {
+                echoes << echo.scatterer_id;
+            }
+            echoes << '\n';
             for (std::size_t vertex_id = 0; vertex_id < echo.path.size(); ++vertex_id) {
                 const auto &vertex = echo.path[vertex_id];
                 paths << ping_id << ',' << echo_id << ',' << vertex_id << ',' << vertex.position_m.x
                       << ',' << vertex.position_m.y << ',' << vertex.position_m.z << ','
                       << static_cast<unsigned>(vertex.surface_mask) << ','
-                      << surface_labels(vertex.surface_mask) << '\n';
+                      << (vertex.volume_scatter ? "particle" : surface_labels(vertex.surface_mask))
+                      << ','
+                      << (vertex.volume_scatter ? "volume"
+                          : vertex.surface_mask ? "surface"
+                                                : "sonar")
+                      << '\n';
             }
         }
         for (std::size_t index = 0; index < ping.profile.size(); ++index) {
@@ -191,7 +214,8 @@ void write_csv(const Config &config, unsigned angle_grad, bool full_scan,
             profiles << ping_id << ',' << ping.angle_grad << ',' << index << ','
                      << bin.center_range_m << ',' << bin.direct_intensity << ','
                      << bin.multipath_intensity << ','
-                     << bin.direct_intensity + bin.multipath_intensity << '\n';
+                     << bin.direct_intensity + bin.multipath_intensity + bin.volume_intensity << ','
+                     << bin.volume_intensity << '\n';
         }
     }
     echoes.close();

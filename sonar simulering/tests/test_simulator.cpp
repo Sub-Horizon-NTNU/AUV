@@ -241,6 +241,148 @@ void invalid_config_and_parser() {
     }
 }
 
+void roughness_surface_model() {
+    auto config = single_ray();
+    config.settings.surface_model = sonar::SurfaceModel::Roughness;
+    config.settings.surface_roughness_m = 0;
+    const auto normal = sonar::surface_response(config.settings, 1);
+    const auto oblique = sonar::surface_response(config.settings, std::sqrt(0.5));
+    near(normal.specular_return, 1, "smooth normal surface returns coherently");
+    check(oblique.specular_return < 1e-100 && oblique.diffuse_return == 0,
+          "smooth oblique reflection misses the reverse incident direction");
+    const auto ping = sonar::simulate_ping(config, 0);
+    check(ping.echoes.size() == 1 && ping.echoes[0].relative_intensity > 0,
+          "normal specular return is consumed instead of double-counted as continuation");
+    double previous_diffuse = 0;
+    for (double sigma : {0.0, 0.00005, 0.0001, 0.0005}) {
+        config.settings.surface_roughness_m = sigma;
+        const auto response = sonar::surface_response(config.settings, 0.7);
+        check(response.diffuse_return >= previous_diffuse,
+              "diffuse share increases as roughness grows at fixed frequency and angle");
+        previous_diffuse = response.diffuse_return;
+        for (double mu : {0.0, 0.01, 0.5, 0.99, 1.0}) {
+            const auto shares = sonar::surface_response(config.settings, mu);
+            check(shares.specular_return + shares.diffuse_return + shares.continuation <= 1 + 1e-12,
+                  "received plus continuing energy must not exceed reflected budget");
+        }
+    }
+    config.settings.surface_model = sonar::SurfaceModel::Legacy;
+    const auto legacy = sonar::simulate_ping(config, 0);
+    const auto baseline = sonar::simulate_ping(single_ray(), 0);
+    near(legacy.echoes[0].relative_intensity, baseline.echoes[0].relative_intensity,
+         "disabled roughness preserves the legacy baseline");
+    std::istringstream valid("surface_model=roughness\nfrequency_hz=750000\nsurface_roughness_m=0."
+                             "0002\nvolume_scatterers=4\nvolume_seed=7\nvolume_strength=0.01\n");
+    const auto loaded = sonar::read_config(valid);
+    check(loaded.settings.surface_model == sonar::SurfaceModel::Roughness &&
+              loaded.settings.volume_seed == 7,
+          "scattering configuration is parsed");
+    for (const auto *invalid : {"surface_model=mirror", "surface_roughness_m=-1", "frequency_hz=0",
+                                "volume_scatterers=4097", "volume_strength=nan"}) {
+        rejects(
+            [&] {
+                std::istringstream input(invalid);
+                sonar::read_config(input);
+            },
+            invalid);
+    }
+}
+
+void volume_scattering() {
+    auto config = single_ray();
+    config.settings.volume_scatterers = 32;
+    config.settings.volume_strength = 0.01;
+    const auto cloud = sonar::volume_points(config);
+    const auto repeated = sonar::volume_points(config);
+    check(cloud.size() == 32, "point count matches configuration");
+    for (std::size_t index = 0; index < cloud.size(); ++index) {
+        near(sonar::length(cloud[index] - repeated[index]), 0, "seed reproduces point positions");
+        check(cloud[index].x > 0 && cloud[index].x < config.pool.length_m && cloud[index].y > 0 &&
+                  cloud[index].y < config.pool.width_m && cloud[index].z > 0 &&
+                  cloud[index].z < config.pool.depth_m,
+              "particles remain strictly inside the pool");
+    }
+    auto changed = config;
+    ++changed.settings.volume_seed;
+    check(sonar::length(sonar::volume_points(changed)[0] - cloud[0]) > 0.01,
+          "another seed changes the cloud");
+    config.pose.position_m = cloud[0];
+    const bool positive = cloud[0].x > 1.0;
+    config.pose.position_m.x += positive ? -1.0 : 1.0;
+    config.pose.yaw_deg = positive ? 0 : 180;
+    const auto find_particle = [](const sonar::Ping &ping) -> const sonar::Echo & {
+        for (const auto &echo : ping.echoes) {
+            if (echo.kind == sonar::EchoKind::Volume && echo.scatterer_id == 0) {
+                return echo;
+            }
+        }
+        throw std::runtime_error("expected aligned particle was absent");
+    };
+    const auto ping = sonar::simulate_ping(config, 0);
+    const auto &volume = find_particle(ping);
+    check(!volume.is_multipath() && volume.path[1].volume_scatter,
+          "volume has its own kind and vertex role");
+    near(volume.apparent_range_m, 1, "single-scatter range");
+    near(volume.total_path_m, 2, "single-scatter closed path");
+    near(volume.travel_time_s, 2 / config.settings.sound_speed_m_s, "single-scatter timing");
+    near(volume.relative_intensity, 0.01 * std::exp(-0.01 * 2),
+         "isotropic relative particle energy");
+    double received_volume = 0;
+    for (const auto &bin : ping.profile) {
+        received_volume += bin.volume_intensity;
+    }
+    check(received_volume > 0, "particle returns accumulate in their separate profile channel");
+    config.settings.horizontal_rays = 9;
+    config.settings.vertical_rays = 7;
+    near(find_particle(sonar::simulate_ping(config, 0)).relative_intensity,
+         volume.relative_intensity, "particle energy does not depend on quadrature ray count");
+    const auto away = sonar::simulate_ping(config, 100);
+    check(std::none_of(away.echoes.begin(), away.echoes.end(),
+                       [](const auto &echo) {
+                           return echo.kind == sonar::EchoKind::Volume && echo.scatterer_id == 0;
+                       }),
+          "point outside the continuous finite fan is rejected");
+    config.settings.volume_strength = 0;
+    const auto disabled = sonar::simulate_ping(config, 0);
+    check(std::none_of(disabled.echoes.begin(), disabled.echoes.end(),
+                       [](const auto &echo) { return echo.kind == sonar::EchoKind::Volume; }),
+          "zero strength disables volume echoes");
+    for (const auto &bin : disabled.profile) {
+        near(bin.volume_intensity, 0, "zero volume channel");
+    }
+    config.settings.volume_strength = 0.01;
+    config.pose.position_m = cloud[0];
+    const bool upward = cloud[0].z > 1.0;
+    config.pose.position_m.z += upward ? -1.0 : 1.0;
+    config.pose.yaw_deg = 0;
+    config.pose.pitch_deg = upward ? -90.0 : 90.0;
+    const auto vertical = sonar::simulate_ping(config, 0);
+    near(find_particle(vertical).apparent_range_m, 1,
+         "inverse pose transform accepts a vertical beam");
+    const auto vertical_energy = find_particle(vertical).relative_intensity;
+    config.pool.wall_reflection = 0;
+    config.pool.floor_reflection = 0;
+    config.pool.surface_reflection = 0;
+    const auto particles_only = sonar::simulate_ping(config, 0);
+    near(find_particle(particles_only).relative_intensity, vertical_energy,
+         "volume scattering is independent of wall reflection coefficients");
+    near(profile_energy(particles_only, false) + profile_energy(particles_only, true), 0,
+         "volume energy is not mislabeled as direct or multipath surface energy");
+    config.settings.max_range_m = 0.75;
+    const auto limited = sonar::simulate_ping(config, 0);
+    check(std::none_of(limited.echoes.begin(), limited.echoes.end(),
+                       [](const auto &echo) {
+                           return echo.kind == sonar::EchoKind::Volume && echo.scatterer_id == 0;
+                       }),
+          "volume obeys maximum range");
+    config.settings.max_range_m = 20;
+    config.settings.volume_scatterers = 0;
+    const auto no_particles = sonar::simulate_ping(config, 0);
+    for (const auto &bin : no_particles.profile) {
+        near(bin.volume_intensity, 0, "zero count disables volume channel");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -252,6 +394,8 @@ int main() {
         {"corner and closed paths", corner_and_closed_paths},
         {"coefficient boundaries", coefficient_boundaries},
         {"invalid config and parser", invalid_config_and_parser},
+        {"roughness surface model", roughness_surface_model},
+        {"volume scattering", volume_scattering},
     };
     unsigned failures = 0;
     for (const auto &[name, test] : tests) {

@@ -23,7 +23,8 @@ if(SONAR_BUILD_VIEWER)
         GIT_REPOSITORY https://github.com/raysan5/raylib.git
         GIT_TAG 02566453880e06bec97f5b8160fa6fe1e98397ca) # Official 6.2 release.
     FetchContent_MakeAvailable(raylib)
-    add_executable(sonar_viewer visualization/main.cpp visualization/model.cpp visualization/view.cpp)
+    add_executable(sonar_viewer visualization/main.cpp visualization/model.cpp visualization/view.cpp
+        visualization/wavefront.cpp)
     target_link_libraries(sonar_viewer PRIVATE sonar_io raylib)
     list(APPEND sonar_targets sonar_viewer)
 endif()
@@ -36,10 +37,15 @@ if(BUILD_TESTING)
     add_test(NAME sonar_cli_invalid_angle COMMAND sonar_sim --angle-grad 400)
     set_tests_properties(sonar_cli_invalid_angle PROPERTIES WILL_FAIL TRUE)
     if(SONAR_BUILD_VIEWER)
-        add_executable(sonar_viewer_tests visualization/test_model.cpp visualization/model.cpp)
+        add_executable(sonar_viewer_tests visualization/test_model.cpp visualization/model.cpp
+            visualization/wavefront.cpp)
         target_link_libraries(sonar_viewer_tests PRIVATE sonar_io)
         list(APPEND sonar_targets sonar_viewer_tests)
         add_test(NAME sonar_viewer_model COMMAND sonar_viewer_tests)
+        add_executable(sonar_wavefront_tests visualization/test_wavefront.cpp visualization/wavefront.cpp)
+        target_link_libraries(sonar_wavefront_tests PRIVATE sonar_core)
+        list(APPEND sonar_targets sonar_wavefront_tests)
+        add_test(NAME sonar_geometric_wavefront COMMAND sonar_wavefront_tests)
     endif()
 endif()
 
