@@ -14,6 +14,7 @@ struct WavefrontPoint {
     unsigned vertical_index{};
     unsigned segment_index{}; // Number of crossed planes; zero is the incident front.
     sonar::Vec3 position_m;
+    sonar::Vec3 direction; // Instantaneous propagation direction; zero for mesh seam vertices.
 };
 
 struct WavefrontFrame {

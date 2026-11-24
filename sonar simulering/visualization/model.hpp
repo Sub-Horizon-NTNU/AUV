@@ -34,6 +34,7 @@ struct Model {
     double progress{};
     bool playing{true};
     Projection projection{Projection::Perspective};
+    bool sonar_aligned{};
     float orbit_deg{35.0F};
     float camera_pitch_deg{32.0F};
     float camera_zoom{1.0F};
@@ -70,6 +71,9 @@ struct Model {
     void orbit_camera(float yaw_delta_deg, float pitch_delta_deg);
     void zoom_camera(float wheel_delta);
     void reset_camera();
+    void align_with_sonar();
+    sonar::Vec3 sonar_to_pool_direction(sonar::Vec3 local) const;
+    sonar::Vec3 pool_to_sonar(sonar::Vec3 position) const;
 };
 
 sonar::Vec3 path_position(const sonar::Echo &echo, double fraction);

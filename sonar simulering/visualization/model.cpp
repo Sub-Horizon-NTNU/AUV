@@ -253,6 +253,32 @@ bool Model::select_image(double local_x, double local_y) {
     return true;
 }
 
+sonar::Vec3 Model::sonar_to_pool_direction(sonar::Vec3 value) const {
+    constexpr double radians = 3.14159265358979323846 / 180.0;
+    const double roll = config.pose.roll_deg * radians;
+    const double pitch = config.pose.pitch_deg * radians;
+    const double yaw = config.pose.yaw_deg * radians;
+    const sonar::Vec3 rolled{value.x, std::cos(roll) * value.y - std::sin(roll) * value.z,
+                             std::sin(roll) * value.y + std::cos(roll) * value.z};
+    const sonar::Vec3 pitched{std::cos(pitch) * rolled.x + std::sin(pitch) * rolled.z, rolled.y,
+                              -std::sin(pitch) * rolled.x + std::cos(pitch) * rolled.z};
+    return {std::cos(yaw) * pitched.x - std::sin(yaw) * pitched.y,
+            std::sin(yaw) * pitched.x + std::cos(yaw) * pitched.y, pitched.z};
+}
+
+sonar::Vec3 Model::pool_to_sonar(sonar::Vec3 position) const {
+    const auto delta = position - config.pose.position_m;
+    return {sonar::dot(delta, sonar_to_pool_direction({1, 0, 0})),
+            sonar::dot(delta, sonar_to_pool_direction({0, 1, 0})),
+            sonar::dot(delta, sonar_to_pool_direction({0, 0, 1}))};
+}
+
+void Model::align_with_sonar() {
+    sonar_aligned = true;
+    projection = Projection::Top;
+    camera_dragging = false;
+}
+
 void Model::tick(double seconds) {
     advance_scan(seconds);
     if (playing) {

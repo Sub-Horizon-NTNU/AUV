@@ -20,7 +20,7 @@ struct CameraInput {
 };
 void update_camera_input(Model &model, const Layout &layout, CameraInput &input, Vector2 mouse);
 void render_sonar(const Model &model, SonarTexture &image, int requested_size);
-void render_world(const Model &model, RenderTexture2D world);
+void render_world(const Model &model, RenderTexture2D world, Font font);
 void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, Vector2 mouse,
                     Font font, const Layout &layout);
 

@@ -49,6 +49,7 @@ int main(int argc, char **argv) {
         bool smoke_test = false;
         bool wavefront_mode = false;
         bool scattering_controls = false;
+        bool align_sonar = false;
         int window_width = 1280;
         int window_height = 800;
         bool guide = false;
@@ -57,6 +58,8 @@ int main(int argc, char **argv) {
             const std::string argument = argv[index];
             if (argument == "--smoke-test") {
                 smoke_test = true;
+            } else if (argument == "--align-sonar") {
+                align_sonar = true;
             } else if (argument == "--wavefront") {
                 wavefront_mode = true;
             } else if (argument == "--scattering") {
@@ -80,7 +83,8 @@ int main(int argc, char **argv) {
             } else if (argument == "--help") {
                 std::cout
                     << "sonar_viewer [--config FILE] [--wavefront] [--scattering] [--smoke-test] "
-                       "[--screenshot FILE.png] [--width N --height N] [--guide] [--scan360]\n"
+                       "[--screenshot FILE.png] [--width N --height N] [--guide] [--scan360] "
+                       "[--align-sonar]\n"
                        "Interactive stationary Ping360 model. Illustrative defaults if no config.\n"
                        "Arrows: angle/echo, Space: pause, Escape: close.\n"
                        "Smoke test renders 8 frames then exits. Screenshot is written only when "
@@ -93,6 +97,9 @@ int main(int argc, char **argv) {
             }
         }
         viewer::Model model(config_path);
+        if (align_sonar) {
+            model.align_with_sonar();
+        }
         model.wavefront_mode = wavefront_mode;
         model.scattering_controls = scattering_controls;
         model.settings_open = scattering_controls;
@@ -150,7 +157,7 @@ int main(int argc, char **argv) {
             const Vector2 mouse = GetMousePosition();
             viewer::update_camera_input(model, layout, camera_input, mouse);
             model.tick(GetFrameTime());
-            viewer::render_world(model, graphics.world);
+            viewer::render_world(model, graphics.world, graphics.font);
             const float pixel_ratio =
                 static_cast<float>(GetRenderWidth()) / static_cast<float>(GetScreenWidth());
             viewer::render_sonar(model, graphics.sonar_image,

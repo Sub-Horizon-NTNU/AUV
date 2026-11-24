@@ -54,6 +54,15 @@ unsigned crossings(sonar::Vec3 unfolded, sonar::Vec3 dimensions) {
     return result;
 }
 
+double reflected_component(double unfolded, double dimension, double incoming) {
+    double cell = std::floor(unfolded / dimension);
+    // At a wall use the outgoing side, including negative-direction exact contacts.
+    if (incoming < 0 && unfolded / dimension == cell) {
+        cell -= 1;
+    }
+    return std::fmod(std::abs(cell), 2.0) == 0 ? incoming : -incoming;
+}
+
 void append_folded_chord(WavefrontFrame &frame, std::size_t first, std::size_t second,
                          sonar::Vec3 start, sonar::Vec3 end, sonar::Vec3 dimensions) {
     const auto delta = end - start;
@@ -87,7 +96,7 @@ void append_folded_chord(WavefrontFrame &frame, std::size_t first, std::size_t s
         const auto index = frame.points.size();
         constexpr unsigned seam = std::numeric_limits<unsigned>::max();
         frame.points.push_back(
-            {seam, seam, seam, crossings(unfolded, dimensions), fold(unfolded, dimensions)});
+            {seam, seam, seam, crossings(unfolded, dimensions), fold(unfolded, dimensions), {}});
         frame.links.emplace_back(last, index);
         last = index;
         previous = fraction;
@@ -149,8 +158,15 @@ WavefrontFrame GeometricWavefront::sample_at_time(double time_s) const {
     for (const auto &ray : rays) {
         const auto position = origin_m + ray.direction * traveled_m;
         unfolded.push_back(position);
-        frame.points.push_back({ray.ray_id, ray.ray_id / vertical_rays, ray.ray_id % vertical_rays,
-                                crossings(position, dimensions_m), fold(position, dimensions_m)});
+        frame.points.push_back(
+            {ray.ray_id,
+             ray.ray_id / vertical_rays,
+             ray.ray_id % vertical_rays,
+             crossings(position, dimensions_m),
+             fold(position, dimensions_m),
+             {reflected_component(position.x, dimensions_m.x, ray.direction.x),
+              reflected_component(position.y, dimensions_m.y, ray.direction.y),
+              reflected_component(position.z, dimensions_m.z, ray.direction.z)}});
     }
     for (unsigned horizontal = 0; horizontal < horizontal_rays; ++horizontal) {
         for (unsigned vertical = 0; vertical < vertical_rays; ++vertical) {

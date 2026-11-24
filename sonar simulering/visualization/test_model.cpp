@@ -24,6 +24,23 @@ void near(sonar::Vec3 actual, sonar::Vec3 expected, const char *message) {
 int main() {
     try {
         viewer::Model model({});
+        const auto original_pose = model.config.pose;
+        const auto original_revision = model.scan_revision;
+        for (const sonar::Pose pose : {original_pose, sonar::Pose{{2, 3, 1}, 20, -35, 90}}) {
+            model.config.pose = pose;
+            const sonar::Vec3 local{1.2, -0.7, 0.4};
+            near(model.pool_to_sonar(pose.position_m + model.sonar_to_pool_direction(local)), local,
+                 "aligned frame must invert the complete sonar pose");
+            near(model.pool_to_sonar(pose.position_m + model.sonar_to_pool_direction({1, 0, 0})),
+                 {1, 0, 0}, "sonar forward must map to local +X (screen up)");
+            near(model.pool_to_sonar(pose.position_m + model.sonar_to_pool_direction({0, 1, 0})),
+                 {0, 1, 0}, "sonar left must map to local +Y (screen left)");
+        }
+        model.config.pose = original_pose;
+        model.align_with_sonar();
+        check(model.projection == viewer::Projection::Top && model.sonar_aligned &&
+                  model.scan_revision == original_revision,
+              "alignment changes only the view and preserves the scan cache");
         auto config = model.config;
         config.settings.horizontal_rays = 1;
         config.settings.vertical_rays = 1;

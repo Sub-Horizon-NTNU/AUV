@@ -54,10 +54,15 @@ void normal_travel_and_clock() {
     check(incident.points.size() == 1 && incident.points[0].segment_index == 0,
           "incident front uses the first forward leg");
     near(incident.points[0].position_m.x, 7, "incident traveled distance equals c*t");
+    near(incident.points[0].direction.x, 1, "incident direction points toward xmax");
+    near(sonar::length(incident.points[0].direction), 1, "direction is a unit vector");
     const auto reflected = wave.sample_at_time(7.0 / 1480.0);
     check(reflected.points.size() == 1 && reflected.points[0].segment_index == 1,
           "front continues along the reflected forward leg");
     near(reflected.points[0].position_m.x, 8, "reflected front travels 2 m back from xmax");
+    near(reflected.points[0].direction.x, -1, "reflected vector reverses its normal component");
+    const auto contact = wave.sample_at_time(5.0 / 1480.0);
+    near(contact.points[0].direction.x, -1, "exact xmax contact uses outgoing direction");
     const auto late = wave.sample_at_time(16.0 / 1480.0);
     check(late.points.size() == 1, "front must persist past the final retained echo contact");
     near(late.points[0].position_m.x, 1, "front continues after its second physical reflection");
@@ -72,6 +77,7 @@ void normal_travel_and_clock() {
           "crossing a reflection time must not jump the front");
     const auto negative = viewer::make_wavefront(config, 200, 1, 1);
     const auto negative_contact = negative.sample_at_time(5.0 / 1480.0);
+    near(negative_contact.points[0].direction.x, 1, "exact xmin contact uses outgoing direction");
     check(negative_contact.points[0].segment_index == 1,
           "exact contact with a minimum plane must count as reflected, like a maximum plane");
     rejects([&] { wave.sample_at_time(-0.01); }, "negative time must be rejected");
@@ -100,6 +106,14 @@ void topology_and_wall_seams() {
     config.settings.max_range_m = 30;
     const auto corner = viewer::make_wavefront(config, 50, 3, 1);
     const auto split = corner.sample_at_time(7.1 / 1480.0);
+    const auto next = corner.sample_at_time(7.10001 / 1480.0);
+    for (std::size_t ray = 0; ray < corner.rays.size(); ++ray) {
+        near(sonar::length(split.points[ray].direction), 1,
+             "oblique reflected propagation vectors remain unit length");
+        const auto observed = (next.points[ray].position_m - split.points[ray].position_m) * 1e5;
+        near(sonar::length(observed - split.points[ray].direction), 0,
+             "direction arrows must agree with observed front motion after a corner");
+    }
     inside(split, config);
     check(split.points.size() > corner.rays.size(),
           "neighbors spanning reflections must acquire wall-seam vertices");

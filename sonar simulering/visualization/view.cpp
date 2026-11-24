@@ -87,7 +87,34 @@ void path3d(const sonar::Echo &echo, Color color) {
     }
 }
 
-void draw_world3d(const Model &model, RenderTexture2D target) {
+void arrow2d(Vector2 start, Vector2 end, Color color, float thickness = 2.0F) {
+    const float dx = end.x - start.x;
+    const float dy = end.y - start.y;
+    const float distance = std::hypot(dx, dy);
+    if (distance < 2.0F) {
+        return;
+    }
+    const float ux = dx / distance;
+    const float uy = dy / distance;
+    const float head = std::min(9.0F, distance * 0.3F);
+    DrawLineEx(start, end, thickness, color);
+    DrawLineEx(end, {end.x - ux * head - uy * head * 0.5F, end.y - uy * head + ux * head * 0.5F},
+               thickness, color);
+    DrawLineEx(end, {end.x - ux * head + uy * head * 0.5F, end.y - uy * head - ux * head * 0.5F},
+               thickness, color);
+}
+
+bool direction_sample(const WavefrontPoint &sample, const GeometricWavefront &front) {
+    // A few vectors explain motion; never draw arrows on interpolated mesh seams.
+    const unsigned h = sample.horizontal_index;
+    const unsigned v = sample.vertical_index;
+    return sample.ray_id < front.rays.size() &&
+           (h == 0 || h == front.horizontal_rays / 2 || h + 1 == front.horizontal_rays) &&
+           (v == 0 || v == front.vertical_rays / 4 || v == front.vertical_rays / 2 ||
+            v == 3 * front.vertical_rays / 4 || v + 1 == front.vertical_rays);
+}
+
+void draw_world3d(const Model &model, RenderTexture2D target, Font font) {
     BeginTextureMode(target);
     ClearBackground(background);
     const auto &pool = model.config.pool;
@@ -144,31 +171,87 @@ void draw_world3d(const Model &model, RenderTexture2D target) {
             model.wavefront.sample_at_time(model.progress * model.wavefront.duration_s());
         for (const auto &link : front.links) {
             DrawLine3D(point(front.points[link.first].position_m),
-                       point(front.points[link.second].position_m), cyan);
+                       point(front.points[link.second].position_m),
+                       front.points[link.first].segment_index == 0 &&
+                               front.points[link.second].segment_index == 0
+                           ? cyan
+                           : amber);
         }
         for (const auto &sample : front.points) {
             DrawPoint3D(point(sample.position_m), sample.segment_index == 0 ? cyan : amber);
+            if (direction_sample(sample, model.wavefront)) {
+                const double size = marker_scale * 0.065;
+                const auto tip = sample.position_m + sample.direction * size;
+                const auto head = sample.position_m + sample.direction * (size * 0.7);
+                const Color color = sample.segment_index == 0 ? cyan : amber;
+                DrawLine3D(point(sample.position_m), point(tip), color);
+                DrawCylinderEx(point(head), point(tip), static_cast<float>(size * 0.09), 0, 8,
+                               color);
+            }
         }
     }
     EndMode3D();
+    // A screen-anchored triad shows the posed SONAR axes, not the pool axes.
+    const Vector2 origin{72, 72};
+    const sonar::Vec3 axes[]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    const Color colors[]{RED, GREEN, BLUE};
+    const char *names[]{"+X", "+Y", "+Z"};
+    for (unsigned index = 0; index < 3; ++index) {
+        const auto endpoint = point(model.config.pose.position_m +
+                                    model.sonar_to_pool_direction(axes[index]) * extent * 0.2);
+        const auto base = GetWorldToScreenEx(point(model.config.pose.position_m), camera,
+                                             target.texture.width, target.texture.height);
+        const auto projected =
+            GetWorldToScreenEx(endpoint, camera, target.texture.width, target.texture.height);
+        const float dx = projected.x - base.x;
+        const float dy = projected.y - base.y;
+        const float magnitude = std::hypot(dx, dy);
+        if (magnitude > 1e-4F) {
+            const Vector2 end{origin.x + dx / magnitude * 34, origin.y + dy / magnitude * 34};
+            arrow2d(origin, end, colors[index]);
+            label(font, names[index], end.x + 4, end.y - 8, 16, colors[index]);
+        }
+    }
+    label(font, "SONAR axes", 14, 12, 16, muted);
     EndTextureMode();
 }
 
 void draw_world2d(const Model &model, Font font, Rectangle world_area) {
     const bool side = model.projection == Projection::Side;
     const auto &pool = model.config.pool;
-    const double vertical_extent = side ? pool.depth_m : pool.width_m;
-    // Include the apparent straight-line point, which can lie outside the real pool.
-    double xmin = 0;
-    double xmax = pool.length_m;
-    double ymin = 0;
-    double ymax = vertical_extent;
+    const bool aligned = model.sonar_aligned && !side;
+    const auto coordinates = [&](sonar::Vec3 value) {
+        if (aligned) {
+            const auto local = model.pool_to_sonar(value);
+            return Vector2{static_cast<float>(-local.y), static_cast<float>(local.x)};
+        }
+        return Vector2{static_cast<float>(value.x), static_cast<float>(side ? value.z : value.y)};
+    };
+    std::vector<sonar::Vec3> corners;
+    double xmin = 0, xmax = 0, ymin = 0, ymax = 0;
+    for (unsigned index = 0; index < 8; ++index) {
+        const sonar::Vec3 corner{(index & 1) ? pool.length_m : 0, (index & 2) ? pool.width_m : 0,
+                                 (index & 4) ? pool.depth_m : 0};
+        corners.push_back(corner);
+        const auto value = coordinates(corner);
+        xmin = std::min(xmin, static_cast<double>(value.x));
+        xmax = std::max(xmax, static_cast<double>(value.x));
+        ymin = std::min(ymin, static_cast<double>(value.y));
+        ymax = std::max(ymax, static_cast<double>(value.y));
+    }
     if (const auto *echo = model.echo()) {
-        const auto apparent = apparent_position(*echo);
-        xmin = std::min(0.0, apparent.x);
-        xmax = std::max(xmax, apparent.x);
-        ymin = std::min(0.0, side ? apparent.z : apparent.y);
-        ymax = std::max(ymax, side ? apparent.z : apparent.y);
+        const auto apparent = coordinates(apparent_position(*echo));
+        xmin = std::min(xmin, static_cast<double>(apparent.x));
+        xmax = std::max(xmax, static_cast<double>(apparent.x));
+        ymin = std::min(ymin, static_cast<double>(apparent.y));
+        ymax = std::max(ymax, static_cast<double>(apparent.y));
+    }
+    if (aligned) {
+        // Same receiver-centered origin as the sonar image; fit both sides equally.
+        xmax = std::max(std::abs(xmin), std::abs(xmax));
+        ymax = std::max(std::abs(ymin), std::abs(ymax));
+        xmin = -xmax;
+        ymin = -ymax;
     }
     const float scale = std::min((world_area.width - 50) / static_cast<float>(xmax - xmin),
                                  (world_area.height - 50) / static_cast<float>(ymax - ymin));
@@ -177,19 +260,31 @@ void draw_world2d(const Model &model, Font font, Rectangle world_area) {
     const float bottom =
         world_area.y + (world_area.height + static_cast<float>(ymax - ymin) * scale) / 2 - 15;
     const auto project = [&](sonar::Vec3 value) {
-        return Vector2{left + static_cast<float>(value.x - xmin) * scale,
-                       bottom - static_cast<float>((side ? value.z : value.y) - ymin) * scale};
+        const auto value2d = coordinates(value);
+        return Vector2{left + (value2d.x - static_cast<float>(xmin)) * scale,
+                       bottom - (value2d.y - static_cast<float>(ymin)) * scale};
     };
-    const auto lower = project({0, 0, 0});
-    const auto upper = project({pool.length_m, pool.width_m, pool.depth_m});
-    DrawRectangleRec({lower.x, upper.y, upper.x - lower.x, lower.y - upper.y},
-                     Color{27, 46, 61, 255});
-    DrawRectangleLinesEx({lower.x, upper.y, upper.x - lower.x, lower.y - upper.y}, 2,
-                         Color{104, 146, 171, 255});
-    label(font, side ? "SIDE / x-z (height)" : "TOP / x-y", world_area.x + 18, world_area.y + 14,
-          17, muted);
-    label(font, "x", upper.x + 10, lower.y - 6, 18, muted);
-    label(font, side ? "z" : "y", lower.x - 20, upper.y - 12, 18, muted);
+    for (unsigned index = 0; index < 8; ++index) {
+        for (unsigned axis = 0; axis < 3; ++axis) {
+            const unsigned neighbor = index ^ (1U << axis);
+            if (neighbor > index) {
+                DrawLineEx(project(corners[index]), project(corners[neighbor]), 2,
+                           Color{104, 146, 171, 255});
+            }
+        }
+    }
+    label(font,
+          aligned ? "SONAR frame / +X up, +Y left"
+          : side  ? "POOL frame / X right, Z up"
+                  : "POOL frame / X right, Y up",
+          world_area.x + 14, world_area.y + 12, 16, muted);
+    const Vector2 axis_origin{world_area.x + 85, world_area.y + 85};
+    const Vector2 axis_x{axis_origin.x + (aligned ? 0 : 40), axis_origin.y - (aligned ? 40 : 0)};
+    const Vector2 axis_y{axis_origin.x - (aligned ? 40 : 0), axis_origin.y - (aligned ? 0 : 40)};
+    arrow2d(axis_origin, axis_x, RED);
+    arrow2d(axis_origin, axis_y, side ? BLUE : GREEN);
+    label(font, "+X", axis_x.x + 4, axis_x.y - 18, 16, RED);
+    label(font, side ? "+Z" : "+Y", axis_y.x - 24, axis_y.y - 18, 16, side ? BLUE : GREEN);
     if (model.show_particle_markers) {
         for (const auto &particle : model.particles) {
             DrawPixelV(project(particle), Color{66, 106, 80, 255});
@@ -219,10 +314,25 @@ void draw_world2d(const Model &model, Font font, Rectangle world_area) {
             model.wavefront.sample_at_time(model.progress * model.wavefront.duration_s());
         for (const auto &link : front.links) {
             DrawLineEx(project(front.points[link.first].position_m),
-                       project(front.points[link.second].position_m), 2, cyan);
+                       project(front.points[link.second].position_m), 2,
+                       front.points[link.first].segment_index == 0 &&
+                               front.points[link.second].segment_index == 0
+                           ? cyan
+                           : amber);
         }
         for (const auto &sample : front.points) {
             DrawCircleV(project(sample.position_m), 3, sample.segment_index == 0 ? cyan : amber);
+            if (direction_sample(sample, model.wavefront)) {
+                const auto start = project(sample.position_m);
+                const auto projected = project(sample.position_m + sample.direction);
+                const float dx = projected.x - start.x;
+                const float dy = projected.y - start.y;
+                const float magnitude = std::hypot(dx, dy);
+                if (magnitude > 1e-4F) {
+                    arrow2d(start, {start.x + dx / magnitude * 26, start.y + dy / magnitude * 26},
+                            sample.segment_index == 0 ? cyan : amber, 2.5F);
+                }
+            }
         }
     }
     DrawCircleV(project(model.config.pose.position_m), 6, cyan);
@@ -404,6 +514,13 @@ void sonar_panel(Model &model, Texture2D texture, Vector2 mouse, Font font) {
     label(font, "+x / 0 grad", center.x - 37, 153, 16, muted);
     label(font, "+y", 530, center.y - 10, 16, muted);
     label(font, "-y", 897, center.y - 10, 16, muted);
+    const Vector2 axes_origin{sonar_image_area.x + 62, sonar_image_area.y + 64};
+    const Vector2 axes_x{axes_origin.x, axes_origin.y - 30};
+    const Vector2 axes_y{axes_origin.x - 30, axes_origin.y};
+    arrow2d(axes_origin, axes_x, RED);
+    arrow2d(axes_origin, axes_y, GREEN);
+    label(font, "+X", axes_x.x + 5, axes_x.y - 12, 16, RED);
+    label(font, "+Y", axes_y.x - 23, axes_y.y - 16, 16, GREEN);
     label(font, "Local frame; outer ring " + number(model.config.settings.max_range_m, 1) + " m",
           566, 475, 16, muted);
     if (CheckCollisionPointRec(mouse, sonar_image_area) &&
@@ -428,8 +545,8 @@ void sonar_panel(Model &model, Texture2D texture, Vector2 mouse, Font font) {
 
 } // namespace
 
-void render_world(const Model &model, RenderTexture2D world) {
-    draw_world3d(model, world);
+void render_world(const Model &model, RenderTexture2D world, Font font) {
+    draw_world3d(model, world, font);
 }
 
 void render_sonar(const Model &model, SonarTexture &image, int requested_size) {
@@ -579,7 +696,15 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
     }
     const auto ray = layout.ray_panel;
     DrawRectangleRec(box(ray), panel);
-    text_at("RAY GEOMETRY", ray.x + 10 * s, ray.y + 8 * s, 18);
+    text_at("RAY", ray.x + 10 * s, ray.y + 8 * s, 18);
+    if (button(font, model.sonar_aligned ? "Pool frame" : "Align sonar",
+               {ray.x + 65 * s, ray.y + 5 * s, 130 * s, h}, content_mouse, model.sonar_aligned)) {
+        if (model.sonar_aligned) {
+            model.sonar_aligned = false;
+        } else {
+            model.align_with_sonar();
+        }
+    }
     float x = ray.x + ray.width - 245 * s;
     const char *views[] = {"3D", "Top", "Side", "Reset"};
     for (int i = 0; i < 4; ++i) {
@@ -587,6 +712,9 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
                    i < 3 && static_cast<int>(model.projection) == i)) {
             if (i < 3) {
                 model.projection = static_cast<Projection>(i);
+                if (i != 1) {
+                    model.sonar_aligned = false;
+                }
             } else {
                 model.reset_camera();
             }
@@ -620,11 +748,12 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
         draw_world2d(model, font, box(area));
     }
     EndScissorMode();
-    text_at(model.wavefront_mode ? "Geometric front: not pressure or interference"
+    text_at(model.wavefront_mode ? "Arrows: cyan incident / amber reflected"
                                  : "Amber: physical path   Purple: apparent position",
             ray.x + 10 * s, ray.y + ray.height - 44 * s, 14, muted);
-    text_at("Drag in 3D to orbit; wheel to zoom", ray.x + 10 * s, ray.y + ray.height - 22 * s, 13,
-            muted);
+    text_at(model.sonar_aligned ? "SONAR frame: +X up / +Y left, matching image"
+                                : "Drag in 3D to orbit; Align sonar matches image",
+            ray.x + 10 * s, ray.y + ray.height - 22 * s, 13, muted);
     // Retain established controls in an independent native vector panel, not a full-window bitmap.
     const auto draw_panel = [&](Rectangle source, Box destination, const auto &draw,
                                 Vector2 input) {
