@@ -29,7 +29,7 @@
   ignored editor settings/launch files; preserve unowned files. Do not commit local paths.
 - Pool frame is right-handed, z up. Local launch angles differ from pool-frame
   path coordinates. Preserve SI units and explicitly suffixed degree/gradian inputs.
-- Only reciprocal terminal-backscatter paths are represented. Preserve complete
+- Surface paths are reciprocal; optional volume paths are single straight returns. Preserve complete
   closed polylines and the distinction between apparent range and roundtrip length.
 - Echo labels are simulation truth, not measured-data classification. Energy is relative.
 - CSV writes preserve existing output files but are not atomic across the three files.
@@ -54,9 +54,16 @@
   passed. Screenshot/window inspected; no automated mouse/keyboard interaction tests.
   `SONAR_BUILD_VIEWER` defaults OFF; only ON fetches pinned raylib 6.2 and enables C.
   View enables it; other helper build actions disable it. Numerical core is unchanged.
+- Current increment `cac4c46eaeb3673eb2e3ae03cdbe82ae06a90545` changes core scattering,
+  example config, CSV and viewer: 5/5 ON, 3/3 OFF and independent CSV/render checks
+  passed. Earlier baseline statements apply only to their commits. See README limits.
+- `visualization/wavefront.*` owns the coarse geometric one-way front. It stops at
+  retained contacts, not the range limit; absent continuation is not absorption.
+- Model caches 400 profiles/cloud and fixed combined scan reference. Channel changes
+  must reselect eligible echoes, including transitions from an empty particle channel.
 - Those results do not validate later source changes, another platform or pool acoustics.
 - Known gaps: real dimensions/material calibration, asymmetric and purely specular
   return-path models, frequency/phase effects and measured Ping360 comparison.
 - Keep viewer cache/state separate from rendering and graphics dependencies out of
   `sonar_core`. Marker motion is slowed playback, the purple point is an apparent
-  location, and profile dB is relative to the ping's strongest channel bin.
+  location, and image/profile dB share the strongest combined bin over the entire scan.

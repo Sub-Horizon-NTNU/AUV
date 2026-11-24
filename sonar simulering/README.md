@@ -65,7 +65,7 @@ ctest --test-dir build --output-on-failure
 
 The same CMake commands work with CMake 3.20+, a C++17 compiler and Ninja on `PATH`; on Unix-like systems invoke `./build/sonar_sim`. Only the Windows toolchain listed below has been verified. `--scan` calculates all 400 motor angles at one fixed pose; it does not simulate scanning time or motion.
 
-Run `sonar_sim --help` for options. Omit `--config` to use the same toy defaults as the example. Select a fresh output subdirectory for each run: existing `echoes.csv`, `paths.csv` or `profiles.csv` files cause an error rather than an overwrite. CSV writing is not atomic as a set; an I/O failure can leave partial files. Inspect those files and rerun with a fresh directory.
+Run `sonar_sim --help` for options. Without `--config`, API defaults use legacy surfaces and no particles. The supplied example now enables roughness (0.15 mm RMS at 750 kHz) and 1024 particle proxies with strength 0.005 and seed 42. Select a fresh output subdirectory for each run: existing `echoes.csv`, `paths.csv` or `profiles.csv` files cause an error rather than an overwrite. CSV writing is not atomic as a set; an I/O failure can leave partial files. Inspect those files and rerun with a fresh directory.
 
 If Windows cannot load GCC runtime DLLs, use CLion's toolchain environment or the `PATH` setup above. Configuration and CLI errors exit with code 1; check the reported file, line or option before rerunning.
 
@@ -79,7 +79,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\sonar simulering\scri
 
 The first viewer build requires Git and network access to fetch official raylib 6.2, pinned to commit `02566453880e06bec97f5b8160fa6fe1e98397ca`. Sources stay in the ignored build dependency cache (`build-vscode/_deps`); there is no global raylib installation. The viewer uses OpenGL 3.3 and also needs a C compiler. Windows rendering was checked; other platforms and font appearance remain unverified. Windows uses locally installed Segoe UI when available, otherwise raylib's default font. The resizable window has a 1000 × 625 minimum and scales a fixed canvas with letterboxing.
 
-Explore one cached ping at a time:
+Compare the selected ping's paths with a cached 400-angle simulated sonar image:
 
 | Control | Action |
 | --- | --- |
@@ -88,12 +88,17 @@ Explore one cached ping at a time:
 | Up/Down arrows or echo `<` / `>` | Select another model echo. |
 | Space or `Pause` / `Play`; `Replay`; progress slider | Pause, replay or scrub the selected sound path. |
 | Click the received profile | Select the nearest eligible modeled arrival by apparent range. This is range selection, not measured-echo identification. |
+| Click the sonar image; `All`, `Direct`, `Multipath`, `Particles` | Select angle/range and filter contributions. Local +x points up and +y left. Overlapping echoes are not uniquely identified. |
+| `Ray paths` / `Wavefront` | Switch between a selected echo's roundtrip and the coarse one-way geometric front. |
+| `Scattering >` | Edit legacy/roughness model, RMS roughness and particle enable/count/strength; apply the draft together. |
 | Draft `−` / `+`, then `Apply draft` | Change pool dimensions, sonar position, receive range or maximum outward contacts together. Invalid drafts retain the last valid simulation and show an error. |
 | `Reload config`; Escape | Reload the supplied config file, or illustrative defaults if none was supplied; close the window. |
 
-Draft edits are not saved to the config file. Orientation, material coefficients and other settings remain configurable through the file. The inspector shows total path, displayed range (`path / 2`), physical return time in milliseconds and outward contact surfaces.
+Draft edits are not saved to the config file. Orientation and other settings remain configurable through the file. The inspector shows total path, displayed range (`path / 2`), physical return time in milliseconds and contact information.
 
-Cyan marks direct profile energy and the sonar/outward pulse; amber marks multipath profile energy, physical path/terminal hit and the return pulse. Purple marks the **apparent straight-line location**, not a real object; it may lie outside the displayed pool/view. Each selected echo is replayed over five seconds for explanation, while its actual return time remains shown in milliseconds. The animation is a moving path marker, not an acoustic wave-field calculation. Profile height is `10 log10(energy / strongest channel bin in this ping)`, floored at −60 dB; these are relative display values, not calibrated acoustic dB. The viewer does not display a full 360° scan image or load measured sonar data.
+Cyan marks direct surface energy and the outward pulse; amber marks multipath/return paths and green marks particle contributions. Purple is the **apparent straight-line location**, not a real object, and may lie outside the view. Ray-path playback stretches the selected roundtrip to five seconds. Image and profile share one fixed reference: the maximum **combined** bin over all 400 angles. Gain and span change only display scaling (`10 log10(energy/reference) + gain`), not the physics; default span is 80 dB. These are not calibrated acoustic dB. The image is simulated, not measured sonar data. Configuration changes rebuild the scan/cloud; angle changes recompute only the selected ping, while channel/gain/span changes reuse scan data.
+
+Wavefront mode samples a coarse 36 × 7 fan from the core's outward surface paths. Points travel distance `c*t` over a one-way window `max_range_m/c`, slowed to five seconds. Links join only neighbors with matching complete surface histories. This is not pressure, FDTD, interference, diffuse branching or particle-scattered fronts. **Paths end at the last retained contact; no free continuation is drawn afterward. A ray with no retained first hit is absent. This is a visualization limit, not physical absorption.** The selected echo's retraced return is not the wavefront clock.
 
 `SONAR_BUILD_VIEWER` defaults to `OFF`, keeping ordinary CLI builds free of raylib downloads and C-compiler requirements. The helper's `View` action turns it on; other build actions, including `Test`, turn it off and run the three CLI/core tests. To build and test the viewer manually, use the tool environment from the CLion/manual section and run these commands **inside this folder**:
 
@@ -104,7 +109,7 @@ ctest --test-dir build-vscode --output-on-failure
 .\build-vscode\sonar_viewer.exe --config examples/pool.cfg
 ```
 
-With the viewer enabled, CTest includes a fourth test for viewer state/path behavior. For optional rendering QA, `sonar_viewer --smoke-test` renders eight frames then exits. Add `--screenshot` with an absolute PNG path to capture that run; this is not needed for normal use. Use `sonar_viewer --help` for the complete small CLI.
+With the viewer enabled, CTest runs five entries, including viewer-state and geometric-front tests. For optional rendering QA, `sonar_viewer --smoke-test` renders eight frames then exits; `--wavefront` and `--scattering` select startup modes. Add `--screenshot` with an absolute PNG path to capture that run; normal use needs none of these switches.
 
 ## Configuration and coordinates
 
@@ -121,6 +126,8 @@ Edit [examples/pool.cfg](examples/pool.cfg). The format is `key=value`, with `#`
 | `backscatter_fraction`, `absorption_per_m` | Backscatter share in [0,1] and energy attenuation coefficient in 1/m; defaults 0.1 and 0.01. |
 | `horizontal_rays`, `vertical_rays` | Fan quadrature counts, each 1–101; product at most 1024. Defaults 3 × 11. |
 | `max_outward_hits`, `range_samples` | At most 1–16 outward contacts per ray; 200–1200 range bins. Defaults 4 and 600. |
+| `surface_model`, `frequency_hz`, `surface_roughness_m` | `legacy` or `roughness`; frequency 500000–1000000 Hz and RMS roughness 0–0.01 m. API defaults: legacy, 750000 Hz, 0.0002 m. |
+| `volume_scatterers`, `volume_strength`, `volume_seed` | 0–4096 points, strength 0–1 and unsigned seed. API defaults: 0 points, 0.001 strength, seed 42. |
 
 The pool frame is right-handed: x/y are horizontal, z points up, the floor is z=0 and water surface is z=`pool_depth_m`. Local +x is the unrotated beam axis; positive head angle rotates toward local +y. CLI angles are integer gradians 0–399, with 1 gradian = 0.9 degrees. Launch azimuth/elevation fields are in the local sonar frame; path positions are in the pool frame. Positive pitch follows the stated right-handed rotation, pointing local +x toward negative pool z at +90 degrees.
 
@@ -141,13 +148,19 @@ interaction_count = 2k - 1
 
 The first contact is labelled direct; later contacts are labelled multipath. These are simulator ground-truth labels, not a classifier for measured sonar data. Complete paths contain the transmitter, outward contacts, reversed earlier contacts and receiver at the transmitter position.
 
-The deliberately uncalibrated relative echo energy is:
+For `surface_model=legacy`, the uncalibrated relative surface echo energy is:
 
 ```text
 I = w P² (R B) μ² [1 m / max(1 m, s)]⁴ exp(-α · 2s)
 ```
 
 Here `w` is normalized ray weight, `R` the terminal surface energy reflection coefficient, `B` the backscatter fraction, `μ` the absolute incidence cosine and `α`=`absorption_per_m`. `P` is the product of prior specular energy fractions `R(1-B)`; squaring accounts for encountering those surfaces outward and on return. `RB` supplies terminal backscatter while `R(1-B)` continues specularly. The 1 m spreading clamp avoids a near-range singularity and is an arbitrary model reference, not a calibration.
+
+For `roughness`, wavelength `λ=c/f` is about 1.97 mm at 1480 m/s and 750 kHz. With RMS roughness `σ`, coherent energy share `S=exp(-(4πσμ/λ)²)` and illustrative receiver lobe `L=exp(-0.5[acos(2μ²−1)/1°]²)`, terminal return share is `q=SL+(1−S)Bμ²`; continuation is `S(1−L)`. Multiply each by material energy coefficient `R`. Return plus continuation is bounded by one; unreceived diffuse energy is discarded. In the energy equation replace `Bμ²` by `q` and use the new prior continuation product. Its square remains an effective reciprocal-path heuristic, not exact transport.
+
+The coherent factor follows the energy square of the amplitude factor in [Delft §4.2.3](https://ocw.tudelft.nl/wp-content/uploads/Reader_chapter_4_01.pdf). That source's small-Rayleigh-parameter approximation is not valid across all allowed settings; extension to large roughness/angles and the receiver lobe are explicit heuristics. [Hansen's 2021 UiO introduction, pp. 3–4](https://www.uio.no/studier/emner/matnat/ifi/IN3015/h24/curriculum/sonar_introduction_2021_compressed.pdf) motivates the distinction between smooth specular surfaces, rough diffuse surfaces and volume scattering.
+
+Optional seeded uniform points represent sparse particles/bubbles, not reflection by homogeneous water. Each eligible point contributes one straight TX→point→RX path inside the finite fan, with relative per-particle strength, spreading and absorption. There are no reflected-particle paths, multiple scattering, bubble resonance, refraction or calibrated volume coefficients.
 
 At simultaneous edge/corner contacts, all tied planes are recorded and reflected. The lowest numbered face supplies terminal backscatter and incidence; continuation applies each tied plane's coefficient. `interaction_count` counts contact locations, not individual tied planes. Edge diffraction is absent.
 
@@ -161,9 +174,11 @@ Each run writes these CSV files:
 | --- | --- |
 | `echoes.csv` | Per-ping echo/ray IDs, angle, contact counts, direct/multipath label, full length, return time, apparent range, relative intensity and receive-window flag. |
 | `paths.csv` | Ordered vertices (`vertex_id`) for every echo, with pool-frame metre coordinates and surface names/bit masks. Join to echoes by `(ping_id, echo_id)`. |
-| `profiles.csv` | Range-bin centres, separate direct/multipath integrated relative energies and their sum, joined by `ping_id`. |
+| `profiles.csv` | Range-bin centres, direct/multipath/volume integrated relative energies and their sum, joined by `ping_id`. |
 
 IDs restart within each run; `echo_id` is local to a ping. The surface bits are x-min=1, x-max=2, y-min=4, y-max=8, floor=16, water surface=32; zero denotes the sonar. Values are floating-point relative energies, not calibrated pressure or Ping360 hardware byte strengths. Preserve the configuration and invocation alongside exported results when comparing runs.
+
+CSV additions retain earlier columns: `echo_kind` (`surface`/`volume`) and volume-only `scatterer_id`, path `vertex_kind` (`sonar`/`surface`/`volume`), and `volume_intensity`. A volume echo has `ray_id=UINT_MAX` and `is_multipath=false`; it is **not** a direct surface echo. Zero surface mask can now also denote a particle, distinguished by its vertex kind. `total_intensity` sums all three channels.
 
 Use `sonar::simulate_ping(Config, angle_grad)` from [simulator.hpp](include/sonar/simulator.hpp) to obtain `Ping`, `Echo`, `PathVertex` and `RangeBin` values directly. It performs no file or graphics I/O and throws `std::invalid_argument` for invalid input. `sonar_core` is the numerical target; `sonar_io` owns configuration/CSV and `sonar_sim` owns CLI interaction.
 
@@ -182,7 +197,9 @@ $formatTool = "$clionRoot\bin\clang\win\x64\bin\clang-format.exe"
 Get-ChildItem include,src,tests -Recurse -File -Include *.hpp,*.cpp | ForEach-Object { & $formatTool --dry-run --Werror $_.FullName }
 ```
 
-These are numerical/software checks, not pool or hardware validation. The model omits asymmetric multipath, enumeration of purely specular closed paths, interference, diffraction, side lobes, detailed surface roughness and electronics. It does not solve a frequency-dependent wave field at the Ping360's nominal 750 kHz or emulate its wire protocol. Real sonar classification, scan motion and acoustic calibration remain unverified.
+Current scattering/image/wavefront implementation `cac4c46eaeb3673eb2e3ae03cdbe82ae06a90545` passed 5/5 viewer-enabled and 3/3 viewer-disabled CTest, format and build checks on the same Windows toolchain. Tests cover roughness energy bounds/angles, particle zero/off/seed/beam/timing/pose, fixed scan reference/cache and empty-channel transitions, plus geometric timing/reflection/history links. Independent CSV inspection checked 51,799 echoes including 955 volume returns and 240,000 bins for finite three-channel sums, IDs, range and timing. Eight-frame scattering and wavefront screenshots were visually inspected; complete GUI control automation was not performed. Earlier commits above are historical evidence; the core and example configuration have now changed.
+
+These are numerical/software checks, not pool or hardware validation. Asymmetric multipath, enumeration of purely specular closed paths, interference, diffraction, side lobes, resolved rough geometry and electronics are absent. Frequency affects only the roughness heuristic; no wave field or hardware protocol is solved. Real-data classification, scan motion and calibration remain unverified.
 
 Step 2 provides the educational viewer and a small draft configuration panel. Synthetic IMU/DVL data, sensor fusion and further simulation work remain later steps; advancement is controlled by the user.
 
