@@ -3,3 +3,5 @@
 /.idea/
 /output/
 CMakeUserPresets.json
+/.vscode/settings.json
+/.vscode/launch.json
