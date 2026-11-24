@@ -1,23 +1,11 @@
-# Sub Horizon — AUV
+# Sub Horizon — Sonar simulation
 
-Utvikling av en autonom undervannsfarkost for RoboSub.
+The `sonar` branch contains the standalone C++17 Ping360 numerical simulator.
 
-**[Åpne prosjektets Wiki](https://github.com/Sub-Horizon-NTNU/AUV/wiki)** for systemoversikt, oppgaver og krav, hardware, software, testing og beslutninger.
+- [Setup, configuration and model documentation](sonar%20simulering/README.md)
+- [CMake project](sonar%20simulering/CMakeLists.txt) — open `sonar simulering` in CLion.
+- [Project wiki](https://github.com/Sub-Horizon-NTNU/AUV/wiki/Sonar-simulering)
 
-## Hvor hører ting hjemme?
-
-| Sted | Innhold |
-|---|---|
-| [Wiki](https://github.com/Sub-Horizon-NTNU/AUV/wiki) | Forklaringer, designvalg, veiledninger og testresultater |
-| `software/` | Kildekode og konfigurasjon |
-| `hardware/` | CAD, koblingsskjemaer og konstruksjonsfiler |
-| [Issues](https://github.com/Sub-Horizon-NTNU/AUV/issues) | Oppgaver, feil og åpne spørsmål |
-
-## Bidra
-
-- Dokumentasjon kan redigeres direkte i Wiki. Bruk sidemenyen for å finne riktig tema.
-- Beskriv formål, løsning, status og neste steg. Skill mellom forslag og det som faktisk er besluttet eller testet.
-- Endringer i kode og konstruksjonsfiler gjøres i en egen branch og sendes inn som en pull request.
-- Lenke til relevante filer og Issues fra wikien, slik at informasjonen er lett å finne.
-
-Prosjektet er i planleggingsfasen. Se wikien for foreløpig oppgaveanalyse og neste steg.
+Step 1 provides numerical echo paths and range profiles for a configurable rectangular pool.
+The model uses a limited reciprocal-backscatter approximation and has not been calibrated
+against pool measurements. Raylib visualization and synthetic IMU/DVL data are later steps.

@@ -1,1 +1,0 @@
-dato,opptak_id,referansemetode,kode_commit,kalibrering_id,modell,checkpoint,plattform,softwareversjoner,effektmodus,input_bredde,input_hoyde,presisjon,aktive_stereopar,slam_aktiv,maalinger_antall,feil3d_median_mm,feil3d_p95_mm,gyldig_objektandel_prosent,latenstid_median_ms,latenstid_p95_ms,maalefrekvens_hz,droppede_bilder,minne_topp_mb,temperatur_maks_c,merknad
