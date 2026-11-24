@@ -1,8 +1,9 @@
 # Sonar simulation context
 
 - Read [README.md](README.md) for commands, equations, units and limits before changes.
-- Scope: step 1, stationary numerical Ping360 approximation. Do not advance to
-  raylib visualization, AUV dynamics, synthetic IMU/DVL or fusion until requested.
+- Implemented scope: step 1 numerical Ping360 approximation and step 2 educational
+  raylib viewer/configuration drafts. AUV dynamics, synthetic IMU/DVL and fusion
+  remain later work requiring a new request.
 - This folder's Norwegian name and root location are explicit user choices.
 - Source/comments/repository documentation use English. The established AUV wiki
   remains Norwegian under its project documentation convention.
@@ -20,6 +21,9 @@
 - `src/io.cpp` and `include/sonar/io.hpp`: key/value configuration and CSV exports.
 - `src/main.cpp`: CLI; `examples/pool.cfg`: illustrative defaults, not calibration.
 - `tests/test_simulator.cpp`: analytic paths, energy, bounds, orientation and errors.
+- `visualization/model.*`: cached ping, selection, draft validation, playback/path
+  calculations; `view.*`: raylib rendering/controls; `main.cpp`: CLI and graphics RAII.
+  `visualization/test_model.cpp` checks model behavior without a graphics window.
 - Root `Sonar.code-workspace`, `.vscode/tasks.json` and `scripts/dev.ps1`: Windows
   VS Code setup, build/test/run tasks and local tool discovery. Setup owns generated,
   ignored editor settings/launch files; preserve unowned files. Do not commit local paths.
@@ -32,7 +36,7 @@
 
 ## Checks and remaining work
 
-- VS Code helper actions `Setup`, `Build`, `Test`, `Run`, `Scan` and `Debug`, plus
+- VS Code helper actions `Setup`, `Build`, `Test`, `Run`, `Scan`, `Debug` and `View`, plus
   manual CMake/formatter commands, are in README. The helper uses `build-vscode`,
   creates fresh Run/Scan outputs, and archives prior debug output without deletion.
   Run checks affected by edits; keep generated builds and output untracked.
@@ -45,8 +49,14 @@
   passed, including 3/3 CTest and GDB command-line breakpoint/normal exit. VS Code
   workspace views were observed; GUI task shortcuts/F5 were not tested end-to-end.
   Simulator C++ and CMake remain unchanged from the numerical baseline.
+- Viewer baseline `4acdeeffcec3a9f4ffff08f72faad00c177fa874`, same date/toolchain:
+  viewer ON 4/4 CTest, fresh OFF 3/3, formatting/parsing and eight-frame OpenGL render
+  passed. Screenshot/window inspected; no automated mouse/keyboard interaction tests.
+  `SONAR_BUILD_VIEWER` defaults OFF; only ON fetches pinned raylib 6.2 and enables C.
+  View enables it; other helper build actions disable it. Numerical core is unchanged.
 - Those results do not validate later source changes, another platform or pool acoustics.
 - Known gaps: real dimensions/material calibration, asymmetric and purely specular
   return-path models, frequency/phase effects and measured Ping360 comparison.
-- The direct library API and complete paths are the intended basis for the next
-  raylib step. Do not add graphics dependencies to `sonar_core`.
+- Keep viewer cache/state separate from rendering and graphics dependencies out of
+  `sonar_core`. Marker motion is slowed playback, the purple point is an apparent
+  location, and profile dB is relative to the ping's strongest channel bin.

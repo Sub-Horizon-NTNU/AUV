@@ -1,8 +1,8 @@
 # Ping360 numerical sonar simulation
 
-Step 1 is a standalone C++17 acoustic ray tracer for a stationary sonar in a rectangular pool. It produces inspectable echo paths, return times and relative range profiles. The calculation library has no graphics or third-party dependencies and can be reused by the planned raylib application.
+Step 1 is a standalone C++17 acoustic ray tracer for a stationary sonar in a rectangular pool. It produces inspectable echo paths, return times and relative range profiles. Step 2 adds an optional raylib viewer for exploring those calculations. The calculation library retains no graphics or third-party dependencies.
 
-The model covers **reciprocal backscatter paths**, not every possible multipath return. Pool dimensions, pose and acoustic coefficients in the example are illustrative; actual pool specifications and calibration are not yet available. There is no AUV dynamics, IMU (inertial measurement unit), DVL (Doppler velocity log), sensor fusion or GUI in this step.
+The model covers **reciprocal backscatter paths**, not every possible multipath return. Pool dimensions, pose and acoustic coefficients in the example are illustrative; actual pool specifications and calibration are not yet available. AUV dynamics, IMU (inertial measurement unit), DVL (Doppler velocity log) and sensor fusion are outside the implemented scope.
 
 ## Build and run
 
@@ -22,6 +22,7 @@ Use **Ctrl+Shift+B** to build. For other actions, open the Command Palette, choo
 
 | Task | Result |
 | --- | --- |
+| `Sonar: Visualize` | Build the optional raylib viewer and open the interactive window. |
 | `Sonar: Setup` | Generate or refresh the managed local editor/debug configuration. |
 | `Sonar: Configure` | Configure the separate Debug build in `build-vscode`. |
 | `Sonar: Build` | Configure and build the simulator and tests; default build task. |
@@ -67,6 +68,43 @@ The same CMake commands work with CMake 3.20+, a C++17 compiler and Ninja on `PA
 Run `sonar_sim --help` for options. Omit `--config` to use the same toy defaults as the example. Select a fresh output subdirectory for each run: existing `echoes.csv`, `paths.csv` or `profiles.csv` files cause an error rather than an overwrite. CSV writing is not atomic as a set; an I/O failure can leave partial files. Inspect those files and rerun with a fresh directory.
 
 If Windows cannot load GCC runtime DLLs, use CLion's toolchain environment or the `PATH` setup above. Configuration and CLI errors exit with code 1; check the reported file, line or option before rerunning.
+
+## Interactive raylib viewer (step 2)
+
+In VS Code, choose **Tasks: Run Task → Sonar: Visualize**. Alternatively, from the repository root:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\sonar simulering\scripts\dev.ps1' -Action View
+```
+
+The first viewer build requires Git and network access to fetch official raylib 6.2, pinned to commit `02566453880e06bec97f5b8160fa6fe1e98397ca`. Sources stay in the ignored build dependency cache (`build-vscode/_deps`); there is no global raylib installation. The viewer uses OpenGL 3.3 and also needs a C compiler. Windows rendering was checked; other platforms and font appearance remain unverified. Windows uses locally installed Segoe UI when available, otherwise raylib's default font. The resizable window has a 1000 × 625 minimum and scales a fixed canvas with letterboxing.
+
+Explore one cached ping at a time:
+
+| Control | Action |
+| --- | --- |
+| `3D`, `Top`, `Side`, `Orbit` | Change projection or increment the 3D camera orbit. |
+| Left/Right arrows or angle slider | Change sonar head angle. |
+| Up/Down arrows or echo `<` / `>` | Select another model echo. |
+| Space or `Pause` / `Play`; `Replay`; progress slider | Pause, replay or scrub the selected sound path. |
+| Click the received profile | Select the nearest eligible modeled arrival by apparent range. This is range selection, not measured-echo identification. |
+| Draft `−` / `+`, then `Apply draft` | Change pool dimensions, sonar position, receive range or maximum outward contacts together. Invalid drafts retain the last valid simulation and show an error. |
+| `Reload config`; Escape | Reload the supplied config file, or illustrative defaults if none was supplied; close the window. |
+
+Draft edits are not saved to the config file. Orientation, material coefficients and other settings remain configurable through the file. The inspector shows total path, displayed range (`path / 2`), physical return time in milliseconds and outward contact surfaces.
+
+Cyan marks direct profile energy and the sonar/outward pulse; amber marks multipath profile energy, physical path/terminal hit and the return pulse. Purple marks the **apparent straight-line location**, not a real object; it may lie outside the displayed pool/view. Each selected echo is replayed over five seconds for explanation, while its actual return time remains shown in milliseconds. The animation is a moving path marker, not an acoustic wave-field calculation. Profile height is `10 log10(energy / strongest channel bin in this ping)`, floored at −60 dB; these are relative display values, not calibrated acoustic dB. The viewer does not display a full 360° scan image or load measured sonar data.
+
+`SONAR_BUILD_VIEWER` defaults to `OFF`, keeping ordinary CLI builds free of raylib downloads and C-compiler requirements. The helper's `View` action turns it on; other build actions, including `Test`, turn it off and run the three CLI/core tests. To build and test the viewer manually, use the tool environment from the CLion/manual section and run these commands **inside this folder**:
+
+```powershell
+cmake -S . -B build-vscode -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSONAR_BUILD_VIEWER=ON
+cmake --build build-vscode
+ctest --test-dir build-vscode --output-on-failure
+.\build-vscode\sonar_viewer.exe --config examples/pool.cfg
+```
+
+With the viewer enabled, CTest includes a fourth test for viewer state/path behavior. For optional rendering QA, `sonar_viewer --smoke-test` renders eight frames then exits. Add `--screenshot` with an absolute PNG path to capture that run; this is not needed for normal use. Use `sonar_viewer --help` for the complete small CLI.
 
 ## Configuration and coordinates
 
@@ -135,6 +173,8 @@ On 2026-11-24, implementation commit `9c5c44c95c9501bacfbb26b6d166e85afc3627a7` 
 
 The VS Code environment at commit `9dc0c892128ecb0a7d8b2770f777038f70f34802` was verified on Windows PowerShell 5.1 on the same date, using VS Code 1.147.0, C/C++ 1.35.6, CMake Tools 1.25.10 and the existing GCC/CMake/Ninja tools plus GDB 15.2. Checks covered repeated Setup, preservation of unowned configuration, clean configure/build, 3/3 CTest, repeated fresh Run exports, a 400-angle Scan and preservation of previous debug output. GDB command-line debugging stopped at `main.cpp` and completed normally. The trusted workspace and C++/CMake views were observed in VS Code, but GUI task shortcuts and F5 were not tested end-to-end. The C++ simulator and CMake files were unchanged by this environment work, so the earlier numerical evidence retains its original scope.
 
+Viewer implementation commit `4acdeeffcec3a9f4ffff08f72faad00c177fa874` passed 4/4 CTest with the viewer enabled and 3/3 in a fresh viewer-disabled build on the same Windows toolchain. Viewer model checks cover marker interpolation, transformed apparent position, caching, invalid drafts, angle wrapping and empty returns. Build warnings, formatter checks and PowerShell parsing passed; independent review confirmed the pinned raylib revision and absence of raylib fetching in the disabled build. An eight-frame OpenGL smoke run rendered successfully and its screenshot was visually inspected; the interactive window was also launched and observed. Automated mouse/keyboard interaction tests were not performed. The numerical core is unchanged by the viewer.
+
 Formatting was checked on all six handwritten C++ files with CLion's bundled clang-format 20.0.0git (`fd2c1bf18bb22baa1ad38834dce4947d891f67d1`). From this folder:
 
 ```powershell
@@ -144,7 +184,7 @@ Get-ChildItem include,src,tests -Recurse -File -Include *.hpp,*.cpp | ForEach-Ob
 
 These are numerical/software checks, not pool or hardware validation. The model omits asymmetric multipath, enumeration of purely specular closed paths, interference, diffraction, side lobes, detailed surface roughness and electronics. It does not solve a frequency-dependent wave field at the Ping360's nominal 750 kHz or emulate its wire protocol. Real sonar classification, scan motion and acoustic calibration remain unverified.
 
-Step 2 is the planned raylib visualization. A configuration panel and synthetic IMU/DVL data are later work; advancement is controlled by the user.
+Step 2 provides the educational viewer and a small draft configuration panel. Synthetic IMU/DVL data, sensor fusion and further simulation work remain later steps; advancement is controlled by the user.
 
 ## Sources
 
