@@ -19,8 +19,8 @@ void print_help() {
                  "  --output DIR     New CSV output directory (default ./output)\n"
                  "  --help           Show this help\n\n"
                  "Outputs: echoes.csv, paths.csv, profiles.csv. Existing files are preserved.\n"
-                 "Model: reciprocal surface paths plus optional single-particle returns; relative "
-                 "energy.\n"
+                 "Model: selectable reciprocal or receiver-gated surface paths, plus optional "
+                 "single-particle returns; relative energy.\n"
                  "Defaults are illustrative, not measured pool dimensions or calibration.\n"
                  "No raylib GUI, AUV dynamics, IMU or DVL simulation in this step.\n";
 }
@@ -95,7 +95,12 @@ int main(int argc, char **argv) {
             << "Range: " << sonar::minimum_range_m << ".." << config.settings.max_range_m
             << " m; sound speed: " << config.settings.sound_speed_m_s << " m/s.\n"
             << "CSV files: " << std::filesystem::absolute(output_directory).string() << '\n'
-            << "Echo energy is relative; restricted surface paths and optional sparse particles.\n";
+            << "Return model: "
+            << (config.settings.return_model == sonar::ReturnModel::ReceiverPaths
+                    ? "receiver_paths (effective aperture + diffuse image paths)"
+                    : "reciprocal (constructed reversed paths)")
+            << ".\n"
+            << "Echo energy is relative; bounded surface routes and optional sparse particles.\n";
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "sonar_sim: " << error.what() << "\nUse --help for usage.\n";

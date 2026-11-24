@@ -215,6 +215,225 @@ void trace_ray(const Config &config, Vec3 direction, unsigned ray_id, double azi
     }
 }
 
+std::pair<double, double> local_angles(Vec3 direction, const Pose &pose) {
+    const Vec3 local{dot(direction, rotate({1, 0, 0}, pose)),
+                     dot(direction, rotate({0, 1, 0}, pose)),
+                     dot(direction, rotate({0, 0, 1}, pose))};
+    return {std::atan2(local.y, local.x) / degrees_to_radians,
+            std::atan2(local.z, std::hypot(local.x, local.y)) / degrees_to_radians};
+}
+
+bool receiver_beam(Vec3 receiver_to_source, const Config &config, unsigned angle_grad) {
+    const auto angles = local_angles(receiver_to_source, config.pose);
+    return std::abs(std::remainder(angles.first - angle_grad * 0.9, 360.0)) <=
+               horizontal_beam_width_deg / 2 + 1e-10 &&
+           std::abs(angles.second) <= vertical_beam_width_deg / 2 + 1e-10;
+}
+
+double coherent_share(const Settings &settings, double mu) {
+    return settings.surface_model == SurfaceModel::Legacy
+               ? 1.0 - settings.backscatter_fraction
+               : surface_response(settings, mu).coherent_share;
+}
+
+Vec3 face_normal(unsigned face) {
+    const double sign = face % 2 ? 1.0 : -1.0;
+    return face / 2 == 0 ? Vec3{sign, 0, 0} : face / 2 == 1 ? Vec3{0, sign, 0} : Vec3{0, 0, sign};
+}
+
+void receive_path(const Config &config, Ping &ping, std::vector<PathVertex> path, unsigned ray_id,
+                  double azimuth_deg, double elevation_deg, unsigned outward_hits,
+                  unsigned total_hits, double outbound_m, double return_m, double energy,
+                  ReturnKind kind) {
+    const double total = outbound_m + return_m;
+    if (energy <= 0 || total > 2 * config.settings.max_range_m ||
+        total_hits > config.settings.max_outward_hits) {
+        return;
+    }
+    const auto arrival =
+        local_angles(path[path.size() - 2].position_m - path.back().position_m, config.pose);
+    Echo echo{ray_id,
+              outward_hits,
+              total_hits,
+              azimuth_deg,
+              elevation_deg,
+              total,
+              total / config.settings.sound_speed_m_s,
+              total / 2,
+              energy,
+              total / 2 >= minimum_range_m && total / 2 < config.settings.max_range_m,
+              std::move(path)};
+    echo.return_kind = kind;
+    echo.return_start_vertex = outward_hits;
+    echo.outbound_path_m = outbound_m;
+    echo.return_path_m = return_m;
+    echo.arrival_azimuth_deg = arrival.first;
+    echo.arrival_elevation_deg = arrival.second;
+    accumulate_profile(config, echo, ping.profile);
+    ping.echoes.push_back(std::move(echo));
+}
+
+// First-order image-source return. The mirrored receiver defines the specular
+// reflection exactly; no reversal of previously traversed vertices is involved.
+bool image_connection(Vec3 scatter, unsigned face, const Config &config, Vec3 &contact) {
+    const std::array<double, 3> dimensions{config.pool.length_m, config.pool.width_m,
+                                           config.pool.depth_m};
+    const unsigned axis = face / 2;
+    const double plane = face % 2 ? dimensions[axis] : 0.0;
+    const Vec3 receiver = config.pose.position_m;
+    Vec3 image = receiver;
+    if (axis == 0) {
+        image.x = 2 * plane - receiver.x;
+    } else if (axis == 1) {
+        image.y = 2 * plane - receiver.y;
+    } else {
+        image.z = 2 * plane - receiver.z;
+    }
+    const auto delta = image - scatter;
+    const double divisor = coordinate(delta, axis);
+    if (std::abs(divisor) < 1e-12) {
+        return false;
+    }
+    const double fraction = (plane - coordinate(scatter, axis)) / divisor;
+    if (fraction <= 1e-10 || fraction >= 1.0 - 1e-10) {
+        return false;
+    }
+    contact = scatter + delta * fraction;
+    for (unsigned other = 0; other < 3; ++other) {
+        if (other != axis && (coordinate(contact, other) <= 1e-10 ||
+                              coordinate(contact, other) >= dimensions[other] - 1e-10)) {
+            return false; // Edge/corner diffraction and multi-plane return contacts are omitted.
+        }
+    }
+    return true;
+}
+
+void diffuse_connections(const Config &config, unsigned angle_grad, const Hit &hit, Vec3 incoming,
+                         const std::vector<PathVertex> &prefix, unsigned ray_id, double azimuth_deg,
+                         double elevation_deg, double outbound_m, double survival,
+                         double ray_weight, Ping &ping) {
+    const unsigned outward_hits = static_cast<unsigned>(prefix.size() - 1);
+    const auto normal = face_normal(static_cast<unsigned>(hit.primary));
+    const double mu_in = std::abs(dot(incoming, normal));
+    const double share =
+        config.settings.surface_model == SurfaceModel::Legacy
+            ? config.settings.backscatter_fraction
+            : (1 - coherent_share(config.settings, mu_in)) * config.settings.backscatter_fraction;
+    const double diffuse = reflection_coefficient(hit.primary, config.pool) * share * mu_in;
+    if (diffuse == 0 || survival == 0) {
+        return;
+    }
+    const auto receiver = config.pose.position_m;
+    const auto connect = [&](bool reflected, unsigned face) {
+        Vec3 contact{};
+        if (reflected && (!image_connection(hit.position_m, face, config, contact) ||
+                          outward_hits + 1 > config.settings.max_outward_hits)) {
+            return;
+        }
+        const Vec3 first_target = reflected ? contact : receiver;
+        const auto first_delta = first_target - hit.position_m;
+        const double first_length = length(first_delta);
+        if (first_length <= 1e-10) {
+            return;
+        }
+        const Vec3 departure = first_delta * (1 / first_length);
+        const double mu_out = -dot(departure, normal);
+        const auto arrival_source = reflected ? contact : hit.position_m;
+        if (mu_out <= 0 || !receiver_beam(arrival_source - receiver, config, angle_grad)) {
+            return;
+        }
+        const double return_m = first_length + (reflected ? length(receiver - contact) : 0);
+        double return_survival = 1;
+        if (reflected) {
+            const double incidence = std::abs(dot(departure, face_normal(face)));
+            return_survival = reflection_coefficient(static_cast<Surface>(face), config.pool) *
+                              coherent_share(config.settings, incidence);
+        }
+        // Small-aperture solid-angle approximation, with uncalibrated Lambert-like
+        // angular factors. This is next-event energy estimation, not a wave amplitude.
+        const double capture = config.settings.receiver_radius_m *
+                               config.settings.receiver_radius_m / (4 * return_m * return_m);
+        const double energy =
+            ray_weight * survival * diffuse * mu_out * return_survival * capture *
+            std::pow(reference_range_m / std::max(reference_range_m, outbound_m), 2) *
+            std::exp(-config.settings.absorption_per_m * (outbound_m + return_m));
+        auto path = prefix;
+        if (reflected) {
+            path.push_back({contact, static_cast<std::uint8_t>(1U << face)});
+        }
+        path.push_back({receiver, 0});
+        receive_path(config, ping, std::move(path), ray_id, azimuth_deg, elevation_deg,
+                     outward_hits, outward_hits + (reflected ? 1U : 0U), outbound_m, return_m,
+                     energy, ReturnKind::DiffuseReceiver);
+    };
+    connect(false, 0);
+    if (config.settings.return_reflections) {
+        for (unsigned face = 0; face < 6; ++face) {
+            if (!(hit.mask & (1U << face))) {
+                connect(true, face);
+            }
+        }
+    }
+}
+
+void trace_receiver_ray(const Config &config, Vec3 direction, unsigned ray_id, double azimuth_deg,
+                        double elevation_deg, double ray_weight, Ping &ping) {
+    std::vector<PathVertex> path{{config.pose.position_m, 0}};
+    Vec3 current = config.pose.position_m;
+    double traveled = 0;
+    double survival = 1;
+    unsigned hits = 0;
+    while (hits <= config.settings.max_outward_hits && traveled < 2 * config.settings.max_range_m) {
+        const auto hit = next_hit(current, direction, config.pool);
+        const double available =
+            std::min(hit.distance_m, 2 * config.settings.max_range_m - traveled);
+        if (hits > 0) {
+            const auto offset = current - config.pose.position_m;
+            const double b = dot(offset, direction);
+            const double discriminant =
+                b * b - dot(offset, offset) +
+                config.settings.receiver_radius_m * config.settings.receiver_radius_m;
+            if (discriminant >= 0) {
+                const double entry = -b - std::sqrt(discriminant);
+                if (entry > 1e-10 && entry <= available &&
+                    receiver_beam(direction * -1, config, ping.angle_grad)) {
+                    auto received = path;
+                    received.push_back({current + direction * entry, 0});
+                    const double total = traveled + entry;
+                    const double energy =
+                        ray_weight * survival *
+                        std::pow(reference_range_m / std::max(reference_range_m, total / 2), 4) *
+                        std::exp(-config.settings.absorption_per_m * total);
+                    receive_path(config, ping, std::move(received), ray_id, azimuth_deg,
+                                 elevation_deg, hits, hits, traveled, entry, energy,
+                                 ReturnKind::SpecularReceiver);
+                    return; // One accepted coherent receiver encounter per launched ray.
+                }
+            }
+        }
+        if (hits == config.settings.max_outward_hits || hit.distance_m > available) {
+            break;
+        }
+        traveled += hit.distance_m;
+        ++hits;
+        path.push_back({hit.position_m, hit.mask});
+        diffuse_connections(config, ping.angle_grad, hit, direction, path, ray_id, azimuth_deg,
+                            elevation_deg, traveled, survival, ray_weight, ping);
+        for (unsigned face = 0; face < 6; ++face) {
+            if (hit.mask & (1U << face)) {
+                const auto normal = face_normal(face);
+                survival *= reflection_coefficient(static_cast<Surface>(face), config.pool) *
+                            coherent_share(config.settings, std::abs(dot(direction, normal)));
+                direction = reflect(direction, normal);
+            }
+        }
+        if (survival == 0) {
+            break;
+        }
+        current = hit.position_m;
+    }
+}
+
 void scatter_volume(const Config &config, unsigned angle_grad, Ping &ping) {
     if (config.settings.volume_scatterers == 0 || config.settings.volume_strength == 0.0) {
         return;
@@ -341,6 +560,20 @@ const char *surface_name(Surface surface) {
     return "unknown";
 }
 
+const char *return_kind_name(ReturnKind kind) {
+    switch (kind) {
+    case ReturnKind::Reciprocal:
+        return "reciprocal";
+    case ReturnKind::SpecularReceiver:
+        return "specular_receiver";
+    case ReturnKind::DiffuseReceiver:
+        return "diffuse_receiver";
+    case ReturnKind::Volume:
+        return "volume";
+    }
+    return "unknown";
+}
+
 void validate(const Config &config) {
     require_range(config.pool.length_m, 0.01, 10000.0, "pool_length_m");
     require_range(config.pool.width_m, 0.01, 10000.0, "pool_width_m");
@@ -381,10 +614,26 @@ void validate(const Config &config) {
     require_range(config.settings.surface_roughness_m, 0, 0.01, "surface_roughness_m");
     require_count(config.settings.volume_scatterers, 0, 4096, "volume_scatterers");
     require_range(config.settings.volume_strength, 0, 1, "volume_strength");
+    if (config.settings.return_model != ReturnModel::Reciprocal &&
+        config.settings.return_model != ReturnModel::ReceiverPaths) {
+        throw std::invalid_argument("unsupported return_model");
+    }
+    require_range(config.settings.receiver_radius_m, 0.0001, 0.5, "receiver_radius_m");
+    require_count(config.settings.return_reflections, 0, 1, "return_reflections");
+    if (config.settings.return_model == ReturnModel::ReceiverPaths) {
+        const auto position = config.pose.position_m;
+        const double clearance =
+            std::min({position.x, position.y, position.z, config.pool.length_m - position.x,
+                      config.pool.width_m - position.y, config.pool.depth_m - position.z});
+        if (config.settings.receiver_radius_m >= clearance) {
+            throw std::invalid_argument(
+                "receiver_radius_m must be smaller than clearance to every pool wall");
+        }
+    }
 }
 
 bool Echo::is_multipath() const {
-    return kind == EchoKind::Surface && outward_hits > 1;
+    return kind == EchoKind::Surface && interaction_count > 1;
 }
 
 Ping simulate_ping(const Config &config, unsigned angle_grad) {
@@ -417,11 +666,31 @@ Ping simulate_ping(const Config &config, unsigned angle_grad) {
                              std::cos(elevation) * std::sin(azimuth), std::sin(elevation)};
             const Vec3 direction = rotate(local, config.pose);
             const unsigned ray_id = horizontal * config.settings.vertical_rays + vertical;
-            trace_ray(config, direction, ray_id, azimuth_deg, elevation_deg,
-                      std::cos(elevation) / total_weight, ping);
+            if (config.settings.return_model == ReturnModel::Reciprocal) {
+                trace_ray(config, direction, ray_id, azimuth_deg, elevation_deg,
+                          std::cos(elevation) / total_weight, ping);
+            } else {
+                trace_receiver_ray(config, direction, ray_id, azimuth_deg, elevation_deg,
+                                   std::cos(elevation) / total_weight, ping);
+            }
         }
     }
     scatter_volume(config, angle_grad, ping);
+    for (auto &echo : ping.echoes) {
+        if (echo.return_kind == ReturnKind::Reciprocal) {
+            echo.return_start_vertex = echo.outward_hits;
+            echo.outbound_path_m = echo.apparent_range_m;
+            echo.return_path_m = echo.apparent_range_m;
+            const auto angles = local_angles(echo.path[echo.path.size() - 2].position_m -
+                                                 echo.path.back().position_m,
+                                             config.pose);
+            echo.arrival_azimuth_deg = angles.first;
+            echo.arrival_elevation_deg = angles.second;
+            if (echo.kind == EchoKind::Volume) {
+                echo.return_kind = ReturnKind::Volume;
+            }
+        }
+    }
     return ping;
 }
 

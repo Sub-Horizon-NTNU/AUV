@@ -85,6 +85,7 @@ Config read_config(std::istream &input) {
         {"frequency_hz", &config.settings.frequency_hz},
         {"surface_roughness_m", &config.settings.surface_roughness_m},
         {"volume_strength", &config.settings.volume_strength},
+        {"receiver_radius_m", &config.settings.receiver_radius_m},
     };
     const std::map<std::string, unsigned *> counts{
         {"horizontal_rays", &config.settings.horizontal_rays},
@@ -93,6 +94,7 @@ Config read_config(std::istream &input) {
         {"range_samples", &config.settings.range_samples},
         {"volume_scatterers", &config.settings.volume_scatterers},
         {"volume_seed", &config.settings.volume_seed},
+        {"return_reflections", &config.settings.return_reflections},
     };
 
     std::set<std::string> seen;
@@ -115,7 +117,15 @@ Config read_config(std::istream &input) {
             if (!seen.insert(key).second) {
                 throw std::invalid_argument("duplicate key");
             }
-            if (key == "surface_model") {
+            if (key == "return_model") {
+                if (value == "reciprocal") {
+                    config.settings.return_model = ReturnModel::Reciprocal;
+                } else if (value == "receiver_paths") {
+                    config.settings.return_model = ReturnModel::ReceiverPaths;
+                } else {
+                    throw std::invalid_argument("expected reciprocal or receiver_paths");
+                }
+            } else if (key == "surface_model") {
                 if (value == "legacy") {
                     config.settings.surface_model = SurfaceModel::Legacy;
                 } else if (value == "roughness") {
@@ -175,7 +185,9 @@ void write_csv(const Config &config, unsigned angle_grad, bool full_scan,
     auto profiles = output_file(profile_path);
     echoes << "ping_id,angle_grad,echo_id,ray_id,launch_azimuth_deg,launch_elevation_deg,"
               "outward_hits,interaction_count,is_multipath,total_path_m,travel_time_s,"
-              "apparent_range_m,relative_intensity,in_receive_window,echo_kind,scatterer_id\n";
+              "apparent_range_m,relative_intensity,in_receive_window,echo_kind,scatterer_id,"
+              "return_kind,return_start_vertex,outbound_path_m,return_path_m,arrival_azimuth_deg,"
+              "arrival_elevation_deg\n";
     paths << "ping_id,echo_id,vertex_id,x_m,y_m,z_m,surface_mask,surfaces,vertex_kind\n";
     profiles << "ping_id,angle_grad,bin_index,center_range_m,direct_intensity,"
                 "multipath_intensity,total_intensity,volume_intensity\n";
@@ -195,7 +207,9 @@ void write_csv(const Config &config, unsigned angle_grad, bool full_scan,
             if (echo.kind == EchoKind::Volume) {
                 echoes << echo.scatterer_id;
             }
-            echoes << '\n';
+            echoes << ',' << return_kind_name(echo.return_kind) << ',' << echo.return_start_vertex
+                   << ',' << echo.outbound_path_m << ',' << echo.return_path_m << ','
+                   << echo.arrival_azimuth_deg << ',' << echo.arrival_elevation_deg << '\n';
             for (std::size_t vertex_id = 0; vertex_id < echo.path.size(); ++vertex_id) {
                 const auto &vertex = echo.path[vertex_id];
                 paths << ping_id << ',' << echo_id << ',' << vertex_id << ',' << vertex.position_m.x

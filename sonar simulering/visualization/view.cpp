@@ -80,10 +80,24 @@ Vector3 point(sonar::Vec3 value) {
     return {static_cast<float>(value.x), static_cast<float>(value.z), static_cast<float>(value.y)};
 }
 
-void path3d(const sonar::Echo &echo, Color color) {
-    for (std::size_t index = 1; index <= echo.outward_hits; ++index) {
-        DrawLine3D(point(echo.path[index - 1].position_m), point(echo.path[index].position_m),
-                   color);
+void path3d(const sonar::Echo &echo, bool selected) {
+    for (std::size_t index = 1; index < echo.path.size(); ++index) {
+        const bool returning = index > echo.return_start_vertex;
+        const Color color = selected
+                                ? (returning ? amber : cyan)
+                                : (returning ? Color{155, 109, 48, 170} : Color{40, 105, 116, 150});
+        const auto start = point(echo.path[index - 1].position_m);
+        const auto end = point(echo.path[index].position_m);
+        DrawLine3D(start, end, color);
+        if (selected) {
+            const auto delta = echo.path[index].position_m - echo.path[index - 1].position_m;
+            const double distance = sonar::length(delta);
+            if (distance > 0.1) {
+                const auto tip = echo.path[index - 1].position_m + delta * 0.7;
+                const auto base = tip - delta * std::min(0.12, 0.15 / distance);
+                DrawCylinderEx(point(base), point(tip), 0.025F, 0, 5, color);
+            }
+        }
     }
 }
 
@@ -143,28 +157,39 @@ void draw_world3d(const Model &model, RenderTexture2D target, Font font) {
     const Vector3 surface_center{pool_center.x, static_cast<float>(pool.depth_m), pool_center.z};
     DrawCubeWires(surface_center, static_cast<float>(pool.length_m), 0.001F,
                   static_cast<float>(pool.width_m), Color{49, 125, 153, 255});
-    if (!model.wavefront_mode) {
-        for (const auto &echo : model.ping.echoes) {
-            if (echo.outward_hits == model.config.settings.max_outward_hits ||
-                echo.outward_hits == 1) {
-                path3d(echo, Color{59, 77, 92, 255});
+    if (!model.wavefront_mode && model.all_returns) {
+        for (std::size_t index = 0; index < model.ping.echoes.size(); ++index) {
+            const auto &arrival = model.ping.echoes[index];
+            if (model.received_route(arrival)) {
+                path3d(arrival, index == model.selected);
+                if (model.playback_time_s() < arrival.travel_time_s) {
+                    const double fraction = model.route_fraction(arrival);
+                    DrawSphereEx(point(path_position(arrival, fraction)), marker_scale * 0.008F, 4,
+                                 4, fraction <= return_fraction(arrival) ? cyan : amber);
+                }
             }
         }
     }
-    if (model.show_particle_markers)
+    if (model.show_particle_markers) {
         for (const auto &particle : model.particles) {
             DrawPoint3D(point(particle), Color{66, 106, 80, 255});
         }
+    }
     DrawSphere(point(model.config.pose.position_m), marker_scale * 0.018F, cyan);
-    if (const auto *echo = model.echo(); echo && !model.wavefront_mode) {
-        path3d(*echo, amber);
+    DrawSphereWires(point(model.config.pose.position_m),
+                    static_cast<float>(model.config.settings.receiver_radius_m), 8, 8, green);
+    if (const auto *echo = model.echo();
+        echo && !model.wavefront_mode && (!model.all_returns || model.received_route(*echo))) {
+        if (!model.all_returns) {
+            path3d(*echo, true);
+        }
         const auto terminal = echo->path[echo->outward_hits].position_m;
         DrawSphereWires(point(terminal), marker_scale * 0.025F, 8, 8, amber);
         const auto apparent = apparent_position(*echo);
         DrawLine3D(point(echo->path.front().position_m), point(apparent), Color{110, 72, 132, 255});
         DrawSphereWires(point(apparent), marker_scale * 0.025F, 8, 8, ghost);
-        DrawSphere(point(path_position(*echo, model.progress)), marker_scale * 0.018F,
-                   model.progress <= 0.5 ? cyan : amber);
+        DrawSphere(point(path_position(*echo, model.route_fraction(*echo))), marker_scale * 0.018F,
+                   model.route_fraction(*echo) <= return_fraction(*echo) ? cyan : amber);
     }
     if (model.wavefront_mode) {
         const auto front =
@@ -212,11 +237,11 @@ void draw_world3d(const Model &model, RenderTexture2D target, Font font) {
             label(font, names[index], end.x + 4, end.y - 8, 16, colors[index]);
         }
     }
-    label(font, "SONAR axes", 14, 12, 16, muted);
+    label(font, "SONAR axes / TX + RX", 14, 12, 16, muted);
     EndTextureMode();
 }
 
-void draw_world2d(const Model &model, Font font, Rectangle world_area) {
+void draw_world2d(Model &model, Font font, Rectangle world_area) {
     const bool side = model.projection == Projection::Side;
     const auto &pool = model.config.pool;
     const bool aligned = model.sonar_aligned && !side;
@@ -239,7 +264,7 @@ void draw_world2d(const Model &model, Font font, Rectangle world_area) {
         ymin = std::min(ymin, static_cast<double>(value.y));
         ymax = std::max(ymax, static_cast<double>(value.y));
     }
-    if (const auto *echo = model.echo()) {
+    if (const auto *echo = model.echo(); echo && !model.move_sonar_mode) {
         const auto apparent = coordinates(apparent_position(*echo));
         xmin = std::min(xmin, static_cast<double>(apparent.x));
         xmax = std::max(xmax, static_cast<double>(apparent.x));
@@ -290,23 +315,41 @@ void draw_world2d(const Model &model, Font font, Rectangle world_area) {
             DrawPixelV(project(particle), Color{66, 106, 80, 255});
         }
     }
-    for (const auto &echo : model.ping.echoes) {
-        for (std::size_t index = 1; index <= echo.outward_hits; ++index) {
-            DrawLineV(project(echo.path[index - 1].position_m),
-                      project(echo.path[index].position_m), Color{53, 74, 90, 255});
+    if (!model.wavefront_mode && model.all_returns) {
+        for (std::size_t route = 0; route < model.ping.echoes.size(); ++route) {
+            const auto &arrival = model.ping.echoes[route];
+            if (!model.received_route(arrival)) {
+                continue;
+            }
+            for (std::size_t vertex = 1; vertex < arrival.path.size(); ++vertex) {
+                const bool returning = vertex > arrival.return_start_vertex;
+                const Color color = route == model.selected ? (returning ? amber : cyan)
+                                    : returning             ? Color{155, 109, 48, 170}
+                                                            : Color{40, 105, 116, 150};
+                arrow2d(project(arrival.path[vertex - 1].position_m),
+                        project(arrival.path[vertex].position_m), color,
+                        route == model.selected ? 2.5F : 1);
+            }
+            if (model.playback_time_s() < arrival.travel_time_s) {
+                const double fraction = model.route_fraction(arrival);
+                DrawCircleV(project(path_position(arrival, fraction)), 3,
+                            fraction <= return_fraction(arrival) ? cyan : amber);
+            }
         }
     }
-    if (const auto *echo = model.echo(); echo && !model.wavefront_mode) {
-        for (std::size_t index = 1; index <= echo->outward_hits; ++index) {
+    if (const auto *echo = model.echo();
+        echo && !model.wavefront_mode && (!model.all_returns || model.received_route(*echo))) {
+        for (std::size_t index = 1; index < echo->path.size(); ++index) {
             DrawLineEx(project(echo->path[index - 1].position_m),
-                       project(echo->path[index].position_m), 3, amber);
+                       project(echo->path[index].position_m), 3,
+                       index > echo->return_start_vertex ? amber : cyan);
             DrawCircleV(project(echo->path[index].position_m), 4, amber);
         }
         DrawLineEx(project(echo->path.front().position_m), project(apparent_position(*echo)), 1,
                    ghost);
         DrawCircleLinesV(project(apparent_position(*echo)), 8, ghost);
-        DrawCircleV(project(path_position(*echo, model.progress)), 6,
-                    model.progress <= 0.5 ? cyan : amber);
+        DrawCircleV(project(path_position(*echo, model.route_fraction(*echo))), 6,
+                    model.route_fraction(*echo) <= return_fraction(*echo) ? cyan : amber);
         DrawCircleLinesV(project(echo->path[echo->outward_hits].position_m), 8, amber);
     }
     if (model.wavefront_mode) {
@@ -335,7 +378,44 @@ void draw_world2d(const Model &model, Font font, Rectangle world_area) {
             }
         }
     }
+    if (model.move_sonar_mode && !side && !aligned) {
+        const Vector2 mouse = GetMousePosition();
+        const Vector2 handle = project(model.config.pose.position_m);
+        const bool hovered = CheckCollisionPointCircle(mouse, handle, 16);
+        if (model.position_dragging || hovered) {
+            SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
+        }
+        const bool overlays = model.help_open || model.settings_open || model.details_open;
+        if (!overlays && hovered && CheckCollisionPointRec(mouse, world_area) &&
+            IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            model.position_dragging = true;
+            model.position_preview = model.config.pose.position_m;
+            model.set_scan_playing(false);
+        }
+        if (model.position_dragging && !overlays) {
+            const double margin = model.config.settings.receiver_radius_m + 0.001;
+            if (pool.length_m > 2 * margin && pool.width_m > 2 * margin) {
+                model.position_preview.x =
+                    std::clamp(static_cast<double>((mouse.x - left) / scale) + xmin, margin,
+                               pool.length_m - margin);
+                model.position_preview.y =
+                    std::clamp(static_cast<double>((bottom - mouse.y) / scale) + ymin, margin,
+                               pool.width_m - margin);
+            }
+            arrow2d(handle, project(model.position_preview), cyan);
+            DrawCircleLinesV(project(model.position_preview), 13, cyan);
+            label(font, "Release to recalculate scan", world_area.x + 12,
+                  world_area.y + world_area.height - 24, 18, cyan);
+            if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                model.position_dragging = false;
+                model.move_stationary(model.position_preview);
+            }
+        }
+        DrawCircleLinesV(handle, 13, cyan);
+    }
     DrawCircleV(project(model.config.pose.position_m), 6, cyan);
+    label(font, "TX / RX", project(model.config.pose.position_m).x + 10,
+          project(model.config.pose.position_m).y + 8, 18, cyan);
 }
 
 void inspector(Model &model, Vector2 mouse, Font font) {
@@ -367,15 +447,32 @@ void inspector(Model &model, Vector2 mouse, Font font) {
         label(font, "Return time", 998, 271, 18, muted);
         label(font, number(echo->travel_time_s * 1000) + " ms", 1260, 271, 20);
         label(font,
-              (echo->kind == sonar::EchoKind::Volume
-                   ? "Particle " + std::to_string(echo->scatterer_id)
-                   : "Ray " + std::to_string(echo->ray_id)) +
-                  "  |  " + std::to_string(echo->interaction_count) +
-                  " roundtrip contact locations",
+              "RX bearing " + number(echo->arrival_azimuth_deg, 1) + " / " +
+                  number(echo->arrival_elevation_deg, 1) + " deg",
               998, 305, 17, muted);
-        wrapped(font, "Outward contacts: " + contacts(*echo), 998, 333, 398, 16, text);
-        label(font, "The sonar divides the roundtrip by two:", 998, 375, 16, muted);
-        label(font, number(echo->total_path_m) + " / 2 = " + number(echo->apparent_range_m) + " m",
+        auto route_contacts = contacts(*echo);
+        if (route_contacts.size() > 70)
+            route_contacts = route_contacts.substr(0, 67) + "...";
+        wrapped(font, std::to_string(echo->interaction_count) + " contacts: " + route_contacts, 998,
+                333, 398, 16, text);
+        const char *route_name = "Legacy retrace";
+        switch (echo->return_kind) {
+        case sonar::ReturnKind::Reciprocal:
+            break;
+        case sonar::ReturnKind::SpecularReceiver:
+            route_name = "Specular to RX";
+            break;
+        case sonar::ReturnKind::DiffuseReceiver:
+            route_name = "Diffuse to RX";
+            break;
+        case sonar::ReturnKind::Volume:
+            route_name = "Particle to RX";
+            break;
+        }
+        label(font, std::string("Return: ") + route_name, 998, 375, 16, muted);
+        label(font,
+              "Out " + number(echo->outbound_path_m) + " m / back " + number(echo->return_path_m) +
+                  " m",
               998, 394, 16, ghost);
         label(font,
               echo->in_receive_window ? "Arrival is inside the receive window."
@@ -383,8 +480,8 @@ void inspector(Model &model, Vector2 mouse, Font font) {
               998, 410, 16, echo->in_receive_window ? muted : amber);
     } else {
         wrapped(font,
-                "No eligible echo in this channel at this angle. Try All, another angle, more "
-                "range or enable particles.",
+                "No received return in this channel at this angle. Try All or another angle. A "
+                "geometric front can still propagate.",
                 998, 191, 390, 20, amber);
     }
 }
@@ -472,8 +569,15 @@ void configuration(Model &model, Vector2 mouse, Font font) {
         if (button(font, "+", {1362, 703, 30, 28}, mouse)) {
             settings.volume_strength = std::min(1.0, settings.volume_strength + 0.001);
         }
-        wrapped(font, "Illustrative surface / particle model. Not calibrated to a pool.", 998, 749,
-                394, 18, muted);
+        if (button(font,
+                   settings.return_model == sonar::ReturnModel::ReceiverPaths
+                       ? "Routes: receiver paths"
+                       : "Routes: legacy reciprocal",
+                   {998, 749, 394, 32}, mouse)) {
+            settings.return_model = settings.return_model == sonar::ReturnModel::ReceiverPaths
+                                        ? sonar::ReturnModel::Reciprocal
+                                        : sonar::ReturnModel::ReceiverPaths;
+        }
     }
     if (button(font, "Apply draft", {998, 807, 180, 36}, mouse)) {
         model.apply(model.draft, model.ping.angle_grad);
@@ -510,6 +614,17 @@ void sonar_panel(Model &model, Texture2D texture, Vector2 mouse, Font font) {
             static_cast<float>(echo->apparent_range_m / model.config.settings.max_range_m) * radius;
         DrawCircleLinesV({center.x - std::sin(angle) * r, center.y - std::cos(angle) * r}, 5,
                          WHITE);
+    }
+    if (model.all_returns && !model.wavefront_mode) {
+        for (const auto &arrival : model.ping.echoes) {
+            if (model.received_route(arrival) && model.playback_time_s() >= arrival.travel_time_s) {
+                const float r = static_cast<float>(arrival.apparent_range_m /
+                                                   model.config.settings.max_range_m) *
+                                radius;
+                DrawCircleV({center.x - std::sin(angle) * r, center.y - std::cos(angle) * r}, 2,
+                            amber);
+            }
+        }
     }
     label(font, "+x / 0 grad", center.x - 37, 153, 16, muted);
     label(font, "+y", 530, center.y - 10, 16, muted);
@@ -636,6 +751,7 @@ void update_camera_input(Model &model, const Layout &layout, CameraInput &input,
 void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, Vector2 mouse,
                     Font font, const Layout &layout) {
     ClearBackground(background);
+    SetMouseCursor(MOUSE_CURSOR_DEFAULT);
     const float s = layout.scale;
     const auto box = [](Box b) { return Rectangle{b.x, b.y, b.width, b.height}; };
     const auto text_at = [&](const std::string &value, float x, float y, int size = 18,
@@ -643,8 +759,9 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
         label(font, value, x, y, std::max(18, static_cast<int>(static_cast<float>(size) * s)),
               color);
     };
-    Vector2 active_mouse =
-        model.help_open || model.camera_dragging ? Vector2{-10000, -10000} : mouse;
+    Vector2 active_mouse = model.help_open || model.camera_dragging || model.position_dragging
+                               ? Vector2{-10000, -10000}
+                               : mouse;
     const float h = std::max(25.0F, 29 * s);
     text_at("PING360 / FOLLOW THE SOUND", layout.header.x, layout.header.y, 25);
     text_at("Compare physical paths with apparent sonar returns", layout.header.x,
@@ -674,9 +791,13 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
         model.help_open = !model.help_open;
     }
     const bool drawer = model.settings_open || model.details_open;
+    if (drawer || model.help_open)
+        model.position_dragging = false;
     const bool over_drawer = drawer && CheckCollisionPointRec(mouse, box(layout.configuration));
     const Vector2 content_mouse =
-        model.help_open || model.camera_dragging || over_drawer ? Vector2{-10000, -10000} : mouse;
+        model.help_open || model.camera_dragging || model.position_dragging || over_drawer
+            ? Vector2{-10000, -10000}
+            : mouse;
     if (!model.help_open) {
         if (IsKeyPressed(KEY_LEFT)) {
             model.change_angle(-1);
@@ -699,10 +820,25 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
     text_at("RAY", ray.x + 10 * s, ray.y + 8 * s, 18);
     if (button(font, model.sonar_aligned ? "Pool frame" : "Align sonar",
                {ray.x + 65 * s, ray.y + 5 * s, 130 * s, h}, content_mouse, model.sonar_aligned)) {
+        model.move_sonar_mode = false;
+        model.position_dragging = false;
         if (model.sonar_aligned) {
             model.sonar_aligned = false;
         } else {
             model.align_with_sonar();
+        }
+    }
+    if (button(font, model.move_sonar_mode ? "Done moving" : "Move sonar",
+               {ray.x + 205 * s, ray.y + 5 * s, 120 * s, h}, content_mouse,
+               model.move_sonar_mode)) {
+        model.move_sonar_mode = !model.move_sonar_mode;
+        model.position_dragging = false;
+        if (model.move_sonar_mode) {
+            model.projection = Projection::Top;
+            model.sonar_aligned = false;
+            model.set_scan_playing(false);
+            model.status =
+                "Drag TX / RX in the pool top view; release to recalculate the stationary scan.";
         }
     }
     float x = ray.x + ray.width - 245 * s;
@@ -711,6 +847,8 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
         if (button(font, views[i], {x, ray.y + 5 * s, 54 * s, h}, content_mouse,
                    i < 3 && static_cast<int>(model.projection) == i)) {
             if (i < 3) {
+                model.move_sonar_mode = false;
+                model.position_dragging = false;
                 model.projection = static_cast<Projection>(i);
                 if (i != 1) {
                     model.sonar_aligned = false;
@@ -731,8 +869,11 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
         model.wavefront_mode = true;
         model.progress = 0;
     }
-    if (button(font, model.show_particle_markers ? "Particle markers: on" : "Particle markers: off",
-               {ray.x + 236 * s, ray.y + 36 * s, 195 * s, h}, content_mouse,
+    if (button(font, model.all_returns ? "All returns: on" : "All returns: off",
+               {ray.x + 236 * s, ray.y + 36 * s, 195 * s, h}, content_mouse, model.all_returns)) {
+        model.all_returns = !model.all_returns;
+    }
+    if (button(font, "Markers", {ray.x + 439 * s, ray.y + 36 * s, 86 * s, h}, content_mouse,
                model.show_particle_markers)) {
         model.show_particle_markers = !model.show_particle_markers;
     }
@@ -748,11 +889,14 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
         draw_world2d(model, font, box(area));
     }
     EndScissorMode();
-    text_at(model.wavefront_mode ? "Arrows: cyan incident / amber reflected"
-                                 : "Amber: physical path   Purple: apparent position",
+    text_at(!model.wavefront_mode && model.received_count() == 0
+                ? "No returns: try Wavefront or another angle"
+            : model.wavefront_mode ? "Arrows: cyan incident / amber reflected"
+                                   : "Cyan: outward / Amber: return / Purple: apparent echo",
             ray.x + 10 * s, ray.y + ray.height - 44 * s, 14, muted);
-    text_at(model.sonar_aligned ? "SONAR frame: +X up / +Y left, matching image"
-                                : "Drag in 3D to orbit; Align sonar matches image",
+    text_at(model.move_sonar_mode ? "Drag TX / RX; release updates all 400 angles"
+            : model.sonar_aligned ? "SONAR frame: +X up / +Y left, matching image"
+                                  : "Drag in 3D to orbit; Align sonar matches image",
             ray.x + 10 * s, ray.y + ray.height - 22 * s, 13, muted);
     // Retain established controls in an independent native vector panel, not a full-window bitmap.
     const auto draw_panel = [&](Rectangle source, Box destination, const auto &draw,
@@ -825,10 +969,15 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
     if (model.wavefront_mode) {
         timing = "One-way front t=" + number(model.progress * model.wavefront.duration_s() * 1000) +
                  " ms; slowed to 5 s playback.";
+    } else if (model.all_returns) {
+        timing = "Received paths: " + std::to_string(model.arrived_count()) + " / " +
+                 std::to_string(model.received_count()) +
+                 " arrived | common t=" + number(model.playback_time_s() * 1000) + " ms";
     } else if (const auto *echo = model.echo()) {
         timing = "Echo: range " + number(echo->apparent_range_m) + " m / return " +
                  number(echo->travel_time_s * 1000) + " ms; " +
-                 (model.progress <= .5 ? "outward" : "return on same route");
+                 (model.route_fraction(*echo) <= return_fraction(*echo) ? "outward"
+                                                                        : "return to receiver");
     }
     text_at(timing, t.x, t.y + t.height - 17 * s, 14, muted);
     if (model.profile_open) {
@@ -865,6 +1014,18 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
                 line(bin.volume_intensity, green, 2);
             }
         }
+        if (model.all_returns && !model.wavefront_mode) {
+            for (const auto &arrival : model.ping.echoes) {
+                if (model.received_route(arrival) &&
+                    model.playback_time_s() >= arrival.travel_time_s) {
+                    const float arrival_x =
+                        plot.x + static_cast<float>(arrival.apparent_range_m /
+                                                    model.config.settings.max_range_m) *
+                                     plot.width;
+                    DrawCircleV({arrival_x, plot.y + 5}, 3, amber);
+                }
+            }
+        }
         for (int tick = 0; tick <= 4; ++tick) {
             text_at(number(model.config.settings.max_range_m * tick / 4, 1),
                     plot.x + static_cast<float>(tick) * plot.width / 4 - 8, base + 3, 13, muted);
@@ -884,7 +1045,9 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
                       static_cast<int>(p.width + 10), static_cast<int>(p.height + 10),
                       Color{3, 9, 15, 235});
         const Vector2 drawer_mouse =
-            model.help_open || model.camera_dragging ? Vector2{-10000, -10000} : mouse;
+            model.help_open || model.camera_dragging || model.position_dragging
+                ? Vector2{-10000, -10000}
+                : mouse;
         if (model.settings_open) {
             draw_panel(
                 {978, 457, 438, 406}, p, [&](Vector2 local) { configuration(model, local, font); },
@@ -938,10 +1101,11 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
                   "Ping360 has a nominal 2 degree horizontal by 25 degree vertical beam. One ping "
                   "illuminates that fan, not the entire circle. Play 360 scan uses an illustration "
                   "speed with a stationary vehicle.");
-        paragraph("Markers and fronts are viewing aids",
-                  "Particle markers only hide background dots; particle echoes remain enabled. "
-                  "Wavefront is geometric, not pressure or interference. Drag in 3D to orbit, "
-                  "wheel to zoom, Reset to restore.");
+        paragraph("Received paths and geometric fronts",
+                  "All returns shows routes that reach TX/RX, from one ping on one clock. Cyan "
+                  "travels out; "
+                  "amber returns. Different routes arrive at different times. Wavefront is "
+                  "diagnostic geometry, not received pressure.");
         if (button(font, "Close help [H]",
                    {left + width / 2 - 80 * s, top + height - 40 * s, 160 * s, 28 * s}, mouse)) {
             model.help_open = false;

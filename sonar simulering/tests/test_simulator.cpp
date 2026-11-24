@@ -383,6 +383,171 @@ void volume_scattering() {
     }
 }
 
+sonar::Config receiver_fixture() {
+    auto config = single_ray();
+    config.settings.return_model = sonar::ReturnModel::ReceiverPaths;
+    config.settings.surface_model = sonar::SurfaceModel::Roughness;
+    config.settings.surface_roughness_m = 0;
+    config.settings.max_outward_hits = 1;
+    return config;
+}
+
+void receiver_specular_geometry() {
+    auto config = receiver_fixture();
+    const auto ping = sonar::simulate_ping(config, 0);
+    check(ping.echoes.size() == 1, "smooth normal wall produces one coherent receiver capture");
+    const auto &echo = ping.echoes[0];
+    check(echo.return_kind == sonar::ReturnKind::SpecularReceiver && echo.path.size() == 3 &&
+              echo.interaction_count == 1 && !echo.is_multipath(),
+          "capture stores its actual reflected route");
+    near(echo.total_path_m, 9.95,
+         "effective sphere entrance shortens the center roundtrip by its radius");
+    near(echo.outbound_path_m, 5, "outbound distance to reflecting wall");
+    near(echo.return_path_m, 4.95, "return distance ends on the aperture");
+    near(echo.path.back().position_m.x, 5.05, "capture point is on the physical specular segment");
+    near(sonar::length(echo.path.back().position_m - config.pose.position_m), 0.05,
+         "capture terminates on the effective receiver sphere");
+    near(echo.travel_time_s, 9.95 / config.settings.sound_speed_m_s, "captured route timing");
+    near(echo.arrival_azimuth_deg, 0, "arrival bearing faces the emitting head");
+    config.pose.yaw_deg = 30;
+    check(sonar::simulate_ping(config, 0).echoes.empty(),
+          "smooth oblique reflection that misses aperture produces no fake echo");
+    config.pose.yaw_deg = 0;
+    config.pool.wall_reflection = 0;
+    check(sonar::simulate_ping(config, 0).echoes.empty(),
+          "absorbing wall produces no received energy");
+    config.pool.wall_reflection = 0.8;
+    config.settings.max_range_m = 4.97;
+    check(sonar::simulate_ping(config, 0).echoes.empty(),
+          "total roundtrip beyond 2Rmax is rejected");
+    config.settings.max_range_m = 4.98;
+    const auto within = sonar::simulate_ping(config, 0);
+    check(within.echoes.size() == 1 &&
+              within.echoes[0].outbound_path_m > config.settings.max_range_m,
+          "tracing is bounded by total route, not an incorrect Rmax outbound cutoff");
+}
+
+void receiver_diffuse_routes() {
+    auto config = receiver_fixture();
+    config.pose.position_m.z = 0.4;
+    config.settings.surface_roughness_m = 0.00015;
+    config.settings.max_outward_hits = 2;
+    const auto ping = sonar::simulate_ping(config, 0);
+    const sonar::Echo *direct = nullptr;
+    const sonar::Echo *via_floor = nullptr;
+    for (const auto &echo : ping.echoes) {
+        if (echo.return_kind == sonar::ReturnKind::DiffuseReceiver && echo.outward_hits == 1) {
+            if (echo.path.size() == 3) {
+                direct = &echo;
+            }
+            if (echo.path.size() == 4 && echo.path[2].surface_mask == (1U << 4)) {
+                via_floor = &echo;
+            }
+        }
+    }
+    check(direct && via_floor,
+          "one launched ping and scatter hit produce direct and reflected receiver connections");
+    near(direct->total_path_m, 10, "direct diffuse receiver route");
+    near(via_floor->total_path_m, 5 + std::sqrt(25 + 0.64),
+         "image-source floor return has its own longer length");
+    check(via_floor->return_start_vertex == 1 && via_floor->interaction_count == 2 &&
+              via_floor->is_multipath(),
+          "one outbound hit plus a return reflection is multipath");
+    near(via_floor->path[2].position_m.x, 7.5, "floor return image-source contact x");
+    near(via_floor->path[2].position_m.z, 0, "floor return contacts actual boundary");
+    const auto in = via_floor->path[2].position_m - via_floor->path[1].position_m;
+    const auto out = via_floor->path[3].position_m - via_floor->path[2].position_m;
+    near(sonar::length(sonar::reflect(in * (1 / sonar::length(in)), {0, 0, 1}) -
+                       out * (1 / sonar::length(out))),
+         0, "image return obeys the specular reflection law");
+    check(via_floor->outbound_path_m != via_floor->return_path_m,
+          "return is not forced to retrace or have the outbound length");
+    const double direct_energy = direct->relative_intensity;
+    config.settings.surface_roughness_m = 0.0003;
+    const auto rougher = sonar::simulate_ping(config, 0);
+    check(std::any_of(rougher.echoes.begin(), rougher.echoes.end(),
+                      [&](const auto &echo) {
+                          return echo.return_kind == sonar::ReturnKind::DiffuseReceiver &&
+                                 echo.path.size() == 3 && echo.relative_intensity > direct_energy;
+                      }),
+          "rougher terminal wall increases direct diffuse energy in the fixture");
+    config.settings.max_outward_hits = 1;
+    const auto limited = sonar::simulate_ping(config, 0);
+    check(std::none_of(limited.echoes.begin(), limited.echoes.end(),
+                       [](const auto &echo) { return echo.interaction_count > 1; }),
+          "wall budget covers both outbound and return interactions");
+    config.settings.max_outward_hits = 2;
+    config.pose.position_m.z = 1.5;
+    const auto narrow_rx = sonar::simulate_ping(config, 0);
+    check(std::none_of(narrow_rx.echoes.begin(), narrow_rx.echoes.end(),
+                       [](const auto &echo) {
+                           return echo.return_kind == sonar::ReturnKind::DiffuseReceiver &&
+                                  echo.outward_hits == 1 && echo.path.size() == 4 &&
+                                  echo.path[2].surface_mask == (1U << 4);
+                       }),
+          "geometric floor connection outside the 25 degree receive fan is rejected");
+    config.settings.return_reflections = 0;
+    config.pose.position_m.z = 0.4;
+    const auto no_return_wall = sonar::simulate_ping(config, 0);
+    check(std::none_of(no_return_wall.echoes.begin(), no_return_wall.echoes.end(),
+                       [](const auto &echo) {
+                           return echo.return_kind == sonar::ReturnKind::DiffuseReceiver &&
+                                  echo.path.size() > 3;
+                       }),
+          "return_reflections=0 disables image-source branches");
+}
+
+void receiver_path_invariants() {
+    auto config = receiver_fixture();
+    config.settings.horizontal_rays = 3;
+    config.settings.vertical_rays = 11;
+    config.settings.surface_roughness_m = 0.00015;
+    config.settings.max_outward_hits = 4;
+    for (unsigned angle = 0; angle < 400; ++angle) {
+        const auto ping = sonar::simulate_ping(config, angle);
+        for (const auto &echo : ping.echoes) {
+            double measured = 0;
+            for (std::size_t vertex = 1; vertex < echo.path.size(); ++vertex) {
+                measured +=
+                    sonar::length(echo.path[vertex].position_m - echo.path[vertex - 1].position_m);
+                const auto point = echo.path[vertex].position_m;
+                check(point.x >= -1e-9 && point.x <= config.pool.length_m + 1e-9 &&
+                          point.y >= -1e-9 && point.y <= config.pool.width_m + 1e-9 &&
+                          point.z >= -1e-9 && point.z <= config.pool.depth_m + 1e-9,
+                      "received route vertices remain inside the pool");
+            }
+            near(measured, echo.total_path_m, "stored path length is the propagated route");
+            near(echo.outbound_path_m + echo.return_path_m, echo.total_path_m,
+                 "outbound and return lengths sum correctly");
+            near(echo.travel_time_s * config.settings.sound_speed_m_s, echo.total_path_m,
+                 "all received route times use actual length");
+            check(echo.relative_intensity > 0 && std::isfinite(echo.relative_intensity) &&
+                      echo.total_path_m <= 2 * config.settings.max_range_m &&
+                      echo.interaction_count <= config.settings.max_outward_hits,
+                  "new receiver mode stores only positive finite, bounded received routes");
+            const double arrival_delta =
+                std::remainder(echo.arrival_azimuth_deg - angle * 0.9, 360.0);
+            check(std::abs(arrival_delta) <= 1 + 1e-9 &&
+                      std::abs(echo.arrival_elevation_deg) <= 12.5 + 1e-9,
+                  "received surface routes pass both receiver angular gates");
+        }
+    }
+    std::istringstream input(
+        "return_model=receiver_paths\nreceiver_radius_m=0.02\nreturn_reflections=1\n");
+    const auto loaded = sonar::read_config(input);
+    check(loaded.settings.return_model == sonar::ReturnModel::ReceiverPaths,
+          "receiver model config is parsed");
+    for (const char *text : {"return_model=unknown", "return_reflections=2", "receiver_radius_m=0",
+                             "return_model=receiver_paths\nsonar_z_m=0.04"}) {
+        rejects(
+            [&] {
+                std::istringstream invalid(text);
+                sonar::read_config(invalid);
+            },
+            text);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -396,6 +561,9 @@ int main() {
         {"invalid config and parser", invalid_config_and_parser},
         {"roughness surface model", roughness_surface_model},
         {"volume scattering", volume_scattering},
+        {"receiver specular geometry", receiver_specular_geometry},
+        {"receiver diffuse routes", receiver_diffuse_routes},
+        {"receiver path invariants", receiver_path_invariants},
     };
     unsigned failures = 0;
     for (const auto &[name, test] : tests) {

@@ -54,6 +54,9 @@ int main(int argc, char **argv) {
         int window_height = 800;
         bool guide = false;
         bool scan = false;
+        bool returns = false;
+        bool details = false;
+        bool move_sonar = false;
         for (int index = 1; index < argc; ++index) {
             const std::string argument = argv[index];
             if (argument == "--smoke-test") {
@@ -66,6 +69,12 @@ int main(int argc, char **argv) {
                 scattering_controls = true;
             } else if (argument == "--guide") {
                 guide = true;
+            } else if (argument == "--move-sonar") {
+                move_sonar = true;
+            } else if (argument == "--details") {
+                details = true;
+            } else if (argument == "--returns") {
+                returns = true;
             } else if (argument == "--scan360") {
                 scan = true;
             } else if ((argument == "--width" || argument == "--height") && index + 1 < argc) {
@@ -84,7 +93,7 @@ int main(int argc, char **argv) {
                 std::cout
                     << "sonar_viewer [--config FILE] [--wavefront] [--scattering] [--smoke-test] "
                        "[--screenshot FILE.png] [--width N --height N] [--guide] [--scan360] "
-                       "[--align-sonar]\n"
+                       "[--align-sonar] [--returns] [--details] [--move-sonar]\n"
                        "Interactive stationary Ping360 model. Illustrative defaults if no config.\n"
                        "Arrows: angle/echo, Space: pause, Escape: close.\n"
                        "Smoke test renders 8 frames then exits. Screenshot is written only when "
@@ -100,11 +109,24 @@ int main(int argc, char **argv) {
         if (align_sonar) {
             model.align_with_sonar();
         }
+        model.move_sonar_mode = move_sonar;
+        if (move_sonar) {
+            model.projection = viewer::Projection::Top;
+            model.sonar_aligned = false;
+        }
         model.wavefront_mode = wavefront_mode;
+        if (returns) {
+            model.all_returns = true;
+        }
         model.scattering_controls = scattering_controls;
         model.settings_open = scattering_controls;
+        model.details_open = details && !scattering_controls;
         model.help_open = guide;
         model.set_scan_playing(scan);
+        if (smoke_test && returns) {
+            model.progress = 0.3;
+            model.playing = false;
+        }
         if (smoke_test && wavefront_mode) {
             model.progress = 0.43;
             model.playing = false;
@@ -133,7 +155,10 @@ int main(int argc, char **argv) {
         unsigned frames = 0;
         while (!WindowShouldClose()) {
             if (IsKeyPressed(KEY_ESCAPE)) {
-                if (model.help_open) {
+                if (model.position_dragging || model.move_sonar_mode) {
+                    model.position_dragging = false;
+                    model.move_sonar_mode = false;
+                } else if (model.help_open) {
                     model.help_open = false;
                 } else if (model.settings_open || model.details_open) {
                     model.settings_open = false;

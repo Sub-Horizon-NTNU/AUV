@@ -191,6 +191,62 @@ int main() {
                   "comparison panels do not overlap; image aspect is fixed; closing profile gives "
                   "space to geometry");
         }
+        model.all_returns = true;
+        model.wavefront_mode = false;
+        model.progress = 0.25;
+        sonar::Echo short_route;
+        short_route.total_path_m = 4;
+        short_route.travel_time_s = 4 / model.config.settings.sound_speed_m_s;
+        short_route.outbound_path_m = 1;
+        short_route.return_path_m = 3;
+        short_route.path = {{{0, 0, 0}, 0}, {{1, 0, 0}, 2}, {{0, 0, 0}, 0}};
+        short_route.in_receive_window = true;
+        short_route.relative_intensity = 1;
+        check(viewer::return_fraction(short_route) == 0.25,
+              "return phase follows outbound distance rather than half the full route");
+        check(model.playback_time_s() == model.progress * 2 * model.config.settings.max_range_m /
+                                             model.config.settings.sound_speed_m_s,
+              "simultaneous returns share the full receiver window clock");
+        check(model.route_fraction(short_route) == 1,
+              "a short route is already received while longer routes may still travel");
+        model.select(0);
+        check(model.progress == 0.25, "inspecting a return does not rewind the shared ping clock");
+        const auto saved_ping = model.ping;
+        const auto saved_channel = model.channel;
+        model.channel = viewer::Channel::Combined;
+        model.ping.echoes = {short_route};
+        check(model.arrived_count() == 1 && model.received_count() == 1,
+              "common time counts only accepted arrivals");
+        model.ping.echoes[0].in_receive_window = false;
+        check(model.arrived_count() == 0 && model.received_count() == 0,
+              "out-of-window geometry is not a received return");
+        model.ping = saved_ping;
+        model.channel = saved_channel;
+        const auto before_move_pose = model.config.pose;
+        const auto before_move_angle = model.ping.angle_grad;
+        const auto before_move_channel = model.channel;
+        const auto before_move_revision = model.scan_revision;
+        check(model.move_stationary({3, 2, 999}), "valid top-view move must apply");
+        near(model.config.pose.position_m, {3, 2, before_move_pose.position_m.z},
+             "top-view move preserves depth");
+        near(model.draft.pose.position_m, model.config.pose.position_m,
+             "move synchronizes configuration draft");
+        check(model.scan_revision == before_move_revision + 1 &&
+                  model.ping.angle_grad == before_move_angle &&
+                  model.channel == before_move_channel &&
+                  model.config.pose.roll_deg == before_move_pose.roll_deg &&
+                  model.config.pose.pitch_deg == before_move_pose.pitch_deg &&
+                  model.config.pose.yaw_deg == before_move_pose.yaw_deg,
+              "move rebuilds one stationary scan and preserves angle/channel/orientation");
+        const auto moved_revision = model.scan_revision;
+        const auto *moved_scan = model.scan[0].data();
+        const auto moved_pose = model.config.pose.position_m;
+        check(!model.move_stationary({0, 2, 0}) && !model.move_stationary({std::nan(""), 2, 0}),
+              "invalid top-view positions must be rejected");
+        near(model.config.pose.position_m, moved_pose,
+             "invalid move preserves the committed position");
+        check(model.scan_revision == moved_revision && model.scan[0].data() == moved_scan,
+              "invalid move preserves the previous scan cache");
         config = model.config;
         config.settings.max_range_m = 0.75;
         check(model.apply(config, 0) && model.echo() == nullptr,

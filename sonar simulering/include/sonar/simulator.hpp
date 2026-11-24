@@ -44,6 +44,9 @@ struct Pose {
 
 enum class SurfaceModel { Legacy, Roughness };
 enum class EchoKind { Surface, Volume };
+enum class ReturnModel { Reciprocal, ReceiverPaths };
+enum class ReturnKind { Reciprocal, SpecularReceiver, DiffuseReceiver, Volume };
+const char *return_kind_name(ReturnKind kind);
 
 struct Settings {
     double sound_speed_m_s{1480.0};
@@ -56,6 +59,7 @@ struct Settings {
     double backscatter_fraction{0.1};
     unsigned horizontal_rays{3};
     unsigned vertical_rays{11};
+    // Reciprocal: outbound contact budget. ReceiverPaths: total outbound+return contacts.
     unsigned max_outward_hits{4};
     unsigned range_samples{600};
     SurfaceModel surface_model{SurfaceModel::Legacy};
@@ -65,6 +69,11 @@ struct Settings {
     unsigned volume_scatterers{};
     unsigned volume_seed{42};
     double volume_strength{0.001};
+    ReturnModel return_model{ReturnModel::Reciprocal};
+    // Effective geometric capture aperture, NOT a measured Ping360 transducer radius.
+    double receiver_radius_m{0.05};
+    // Diffuse next-event return paths may use zero or one extra specular wall.
+    unsigned return_reflections{1};
 };
 
 struct SurfaceResponse {
@@ -75,7 +84,8 @@ struct SurfaceResponse {
 };
 
 /// Heuristic reflected-energy shares before multiplying by the material energy coefficient R.
-/// Roughness uses a Gaussian coherent factor and a fixed 1 degree receiver acceptance lobe.
+/// Reciprocal mode uses a Gaussian coherent factor and fixed 1 degree acceptance lobe.
+/// ReceiverPaths uses coherent_share only; its receiver is tested geometrically instead.
 /// Return + continuation <= 1; unreceived diffuse energy is discarded, not branched.
 SurfaceResponse surface_response(const Settings &settings, double incidence_cosine);
 
@@ -102,7 +112,7 @@ struct PathVertex {
 struct Echo {
     unsigned ray_id{};
     unsigned outward_hits{};
-    // Counts contact locations along the full return path: 2*outward_hits-1.
+    // Surface contact locations on the full path; reciprocal mode uses 2*outward_hits-1.
     unsigned interaction_count{};
     double launch_azimuth_deg{};
     double launch_elevation_deg{};
@@ -111,10 +121,19 @@ struct Echo {
     double apparent_range_m{};
     double relative_intensity{};
     bool in_receive_window{};
-    // Complete closed polyline: TX, outward contacts, reversed contacts, RX.
+    // Complete route from TX to RX. ReceiverPaths routes are not constructed by reversal;
+    // specular capture terminates on the effective receiver sphere, others at its center.
     std::vector<PathVertex> path;
     EchoKind kind{EchoKind::Surface};
     unsigned scatterer_id{}; // Meaningful only for Volume echoes; ray_id is then UINT_MAX.
+    ReturnKind return_kind{ReturnKind::Reciprocal};
+    // Index of the terminal diffuse event or final specular reflection before reception.
+    std::size_t return_start_vertex{};
+    double outbound_path_m{};
+    double return_path_m{};
+    // Receiver-to-last-leg direction in the local sonar frame, degrees.
+    double arrival_azimuth_deg{};
+    double arrival_elevation_deg{};
 
     bool is_multipath() const;
 };
@@ -135,12 +154,17 @@ struct Ping {
 
 /**
  * Deterministic geometric approximation for a stationary monostatic sonar.
- * At every sampled outward hit, backscatter retraces the outward path. Earlier
- * contacts are specular in both directions. Asymmetric and purely specular
- * closed paths, interference, diffraction, side lobes and calibrated amplitudes
- * are NOT modeled. Optional volume echoes are straight single-particle roundtrips.
- * Surface roughness/lobe and particle strength are relative heuristics, not calibrated
- * transport or a frequency-dependent wave solver. All interfaces use SI units except angles.
+ * Reciprocal (default) mode constructs a reversed backscatter route at every hit.
+ * ReceiverPaths mode instead accepts a launched specular ray only when it intersects
+ * the effective receiver sphere after reflection, plus diffuse next-event connections
+ * directly or via one image-source wall. Both transmit and receive beam fans apply.
+ * It retains the first coherent capture per ray and bounded diffuse branches, not all
+ * possible return paths. Total route is limited to 2*max_range_m. Specular capture
+ * times end on the aperture; next-event diffuse times end at the receiver center.
+ * Optional volume echoes remain straight single-particle roundtrips. Surface shares,
+ * aperture and scattering strengths are uncalibrated geometric energy approximations.
+ * Interference, diffraction, side lobes and a frequency-dependent wave field are absent.
+ * All interfaces use SI units except explicitly named angles.
  * Throws std::invalid_argument for invalid config or angle_grad outside [0,399].
  */
 Ping simulate_ping(const Config &config, unsigned angle_grad);

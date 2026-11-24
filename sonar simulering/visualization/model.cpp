@@ -92,6 +92,28 @@ bool Model::apply(const sonar::Config &candidate, unsigned angle) {
     }
 }
 
+bool Model::move_stationary(sonar::Vec3 position) {
+    position.z = config.pose.position_m.z;
+    const double clearance = config.settings.receiver_radius_m;
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z) ||
+        position.x <= clearance || position.x >= config.pool.length_m - clearance ||
+        position.y <= clearance || position.y >= config.pool.width_m - clearance ||
+        position.z <= clearance || position.z >= config.pool.depth_m - clearance) {
+        error = true;
+        status = "Position not applied: keep the receiver aperture clear of all pool surfaces.";
+        return false;
+    }
+    auto candidate = config;
+    candidate.pose.position_m = position;
+    const bool applied = apply(candidate, ping.angle_grad);
+    if (applied) {
+        set_scan_playing(false);
+        status =
+            "Stationary sonar moved; all 400 angles recalculated. No vehicle motion simulated.";
+    }
+    return applied;
+}
+
 void Model::reload() {
     try {
         const auto candidate =
@@ -168,8 +190,10 @@ void Model::set_channel(Channel new_channel) {
 void Model::select(std::size_t index) {
     if (index < ping.echoes.size()) {
         selected = index;
-        progress = 0.0;
-        playing = true;
+        if (!all_returns && !wavefront_mode) {
+            progress = 0.0;
+            playing = true;
+        }
     }
 }
 
@@ -215,6 +239,46 @@ bool Model::accepts(const sonar::Echo &arrival) const {
            (channel == Channel::Multipath && arrival.is_multipath()) ||
            (channel == Channel::Direct && arrival.kind == sonar::EchoKind::Surface &&
             !arrival.is_multipath());
+}
+
+bool Model::received_route(const sonar::Echo &arrival) const {
+    return accepts(arrival) && arrival.in_receive_window && arrival.relative_intensity > 0 &&
+           arrival.path.size() >= 2;
+}
+
+double Model::playback_time_s() const {
+    if (wavefront_mode) {
+        return progress * wavefront.duration_s();
+    }
+    if (all_returns) {
+        return progress * 2 * config.settings.max_range_m / config.settings.sound_speed_m_s;
+    }
+    const auto *selected_echo = echo();
+    return selected_echo ? progress * selected_echo->travel_time_s : 0;
+}
+
+double Model::route_fraction(const sonar::Echo &arrival) const {
+    return arrival.travel_time_s > 0
+               ? std::clamp(playback_time_s() / arrival.travel_time_s, 0.0, 1.0)
+               : 1;
+}
+
+std::size_t Model::arrived_count() const {
+    return static_cast<std::size_t>(
+        std::count_if(ping.echoes.begin(), ping.echoes.end(), [&](const sonar::Echo &arrival) {
+            return received_route(arrival) && playback_time_s() >= arrival.travel_time_s;
+        }));
+}
+
+std::size_t Model::received_count() const {
+    return static_cast<std::size_t>(
+        std::count_if(ping.echoes.begin(), ping.echoes.end(),
+                      [&](const sonar::Echo &arrival) { return received_route(arrival); }));
+}
+
+double return_fraction(const sonar::Echo &echo) {
+    return echo.total_path_m > 0 ? std::clamp(echo.outbound_path_m / echo.total_path_m, 0.0, 1.0)
+                                 : 0.5;
 }
 
 double Model::channel_energy(const sonar::RangeBin &bin) const {
@@ -322,7 +386,7 @@ std::string contacts(const sonar::Echo &echo) {
         return "particle " + std::to_string(echo.scatterer_id) + " (single scattering)";
     }
     std::string result;
-    for (std::size_t vertex = 1; vertex <= echo.outward_hits; ++vertex) {
+    for (std::size_t vertex = 1; vertex + 1 < echo.path.size(); ++vertex) {
         if (!result.empty()) {
             result += " > ";
         }

@@ -28,6 +28,10 @@ struct Model {
     double dynamic_range_db{80};
     bool scattering_controls{};
     bool wavefront_mode{};
+    bool all_returns{true};
+    bool move_sonar_mode{};
+    bool position_dragging{};
+    sonar::Vec3 position_preview;
     GeometricWavefront wavefront;
     std::filesystem::path config_path;
     std::size_t selected{};
@@ -52,6 +56,7 @@ struct Model {
 
     explicit Model(std::filesystem::path path);
     bool apply(const sonar::Config &candidate, unsigned angle);
+    bool move_stationary(sonar::Vec3 position);
     void reload();
     void change_angle(int delta);
     void set_angle(unsigned angle, bool manual = true);
@@ -64,6 +69,11 @@ struct Model {
     void tick(double seconds);
     const sonar::Echo *echo() const;
     bool accepts(const sonar::Echo &arrival) const;
+    bool received_route(const sonar::Echo &arrival) const;
+    double playback_time_s() const;
+    double route_fraction(const sonar::Echo &arrival) const;
+    std::size_t arrived_count() const;
+    std::size_t received_count() const;
     double channel_energy(const sonar::RangeBin &bin) const;
     double display_level(double energy) const;
     // Local plan view: +x forward/up, +y left; normalized radius [0,1].
@@ -76,6 +86,7 @@ struct Model {
     sonar::Vec3 pool_to_sonar(sonar::Vec3 position) const;
 };
 
+double return_fraction(const sonar::Echo &echo);
 sonar::Vec3 path_position(const sonar::Echo &echo, double fraction);
 // Uses the existing pool-frame first segment, preserving the core pose transform.
 sonar::Vec3 apparent_position(const sonar::Echo &echo);
