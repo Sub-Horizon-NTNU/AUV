@@ -55,7 +55,7 @@ Dette er en anbefalt anvendelse for prosjektet, ikke en dokumentert nøyaktighet
 
 ## Pinax og arbeidsdeling mellom kalibrering og drift
 
-Referanse: Luczynski, Pfingsthorn og Birk, «The Pinax-Model for Accurate and Efficient Refraction Correction of Underwater Cameras in Flat-Pane Housings» (Ocean Engineering, 2017). Lokal kopi: `references/Luczynski_OceanEngineering2017.pdf`.
+Referanse: Luczynski, Pfingsthorn og Birk, «The Pinax-Model for Accurate and Efficient Refraction Correction of Underwater Cameras in Flat-Pane Housings» (Ocean Engineering, 2017). [Bevart kopi av artikkelen](../references/Luczynski_OceanEngineering2017.pdf).
 
 Pinax og Calibmar behandler samme grunnproblem, men har forskjellig rolle og virkeområde. Calibmar estimerer kamera- og husparametere og støtter både dome og flat port. Pinax gir effektiv bildekorreksjon for flat port under bestemte geometriske forutsetninger, blant annet at kameraet er nær vinduet. Pinax bruker et forhåndsberegnet oppslagskart og vannets brytningsindeks. Artikkelen sammenligner også feil i triangulerte 3D-punkter i stereoforsøk.
 

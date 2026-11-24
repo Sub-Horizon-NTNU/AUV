@@ -1,24 +1,19 @@
-# Vision for Sub Horizon AUV
+# Vision
 
-Kort rapport og arbeidsgrunnlag for stereovisjon, objektlokalisering og manipulasjon under vann.
+Dokumentasjon for stereosyn og objektlokalisering på Sub Horizon AUV.
 
-**Status 18. november 2026:** Arkitekturforslag og research. Ingen modeller, kalibreringer eller ROS-noder er implementert eller ytelsesvalidert i denne mappen.
+**Status 24. november 2026:** Kandidatarkitektur under planlegging. Implementasjon, undervannskalibrering og ytelse er ikke validert i dette repoet.
 
-## Start her
+| Mappe | Innhold |
+| --- | --- |
+| [kandidatarkitektur/](kandidatarkitektur/) | Arbeidsplan for første oppsett og beskrivelse av pipelinen |
+| [research/](research/) | Undersøkelser, alternativer, tidligere forslag, kilder og testgrunnlag |
 
-- [Kort rapport: anbefalt vision-pipeline](RAPPORT.md)
-- [Visuell pipeline og redigerbart diagram](PIPELINE.md)
-- [Modeller og valgkriterier](MODELLER.md)
-- [Testplan og beslutningsporter](TESTPLAN.md)
-- [Forskningsartikler, verktøy og kildeoversikt](references/README.md)
-- [Opprinnelig kalibreringsnotat](bakgrunn/KALIBRERING_START_HER.md)
+## Kandidatarkitektur
 
-![Foreslått vision-pipeline](assets/vision-pipeline.svg)
+- [Arkitektur og plan](kandidatarkitektur/ARKITEKTUR.md)
+- [Kort rapport om pipelinen](kandidatarkitektur/PIPELINE.md)
 
-## Foreløpig anbefaling
+Arbeidsplanen tar utgangspunkt i ett synkronisert stereopar, NVIDIA Light ESS, Jetson Orin Nano Super 8 GB og Calibmar. Kameraer, hus og programvareversjoner er ikke endelig valgt.
 
-Start med ett synkronisert stereopar, domehus som foreløpig hovedspor, Calibmar-kalibrering og en klassisk stereoreferanse. Evaluer Light ESS og LightStereo-S på Jetson Orin Nano. Finn et definert gripepunkt med markør, enkel geometri eller liten segmenteringsmodell, og korriger tilnærmingen løpende med visuell feedback.
-
-Geometrien gjennom huset må være validert før disparitet tolkes som metrisk dybde. Flere stereopar, SLAM og tyngre posemodeller legges til etter behov og målinger.
-
-Tredjepartskode, modellvekter og store datasett hentes fra originalkildene i [kildeoversikten](references/README.md). Implementasjonskode kan senere plasseres i repoets `software/`.
+[Vision i prosjektets Wiki](https://github.com/Sub-Horizon-NTNU/AUV/wiki/Vision)
