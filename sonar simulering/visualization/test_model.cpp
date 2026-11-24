@@ -1,3 +1,4 @@
+#include "layout.hpp"
 #include "model.hpp"
 
 #include <algorithm>
@@ -95,6 +96,84 @@ int main() {
         check(model.scan_revision == scan_revision && model.scan[0].data() == cached_scan,
               "channel recovery must reuse the existing scan cache");
         model.set_channel(viewer::Channel::Combined);
+        model.orbit_camera(90, 200);
+        check(model.camera_pitch_deg == 80 && model.orbit_deg != 35,
+              "camera orbit changes yaw and clamps pitch before its pole");
+        model.zoom_camera(1000);
+        check(model.camera_zoom == 0.3F, "zoom in is bounded");
+        model.zoom_camera(-1000);
+        check(model.camera_zoom == 3.5F, "zoom out is bounded");
+        model.reset_camera();
+        model.show_particle_markers = false;
+        check(model.camera_pitch_deg == 32 && model.orbit_deg == 35 && model.camera_zoom == 1 &&
+                  model.scan_revision == scan_revision && model.scan[0].data() == cached_scan &&
+                  model.config.settings.volume_scatterers == 0,
+              "camera and marker visibility preserve physics and the scan cache");
+        model.set_angle(399);
+        model.progress = 0.37;
+        model.playing = false;
+        model.set_scan_playing(true);
+        model.advance_scan(0.05);
+        check(model.ping.angle_grad == 1 && model.scan_playing && model.progress == 0.37 &&
+                  !model.playing,
+              "360 scan wraps through zero and preserves the independent propagation clock");
+        model.advance_scan(1000000);
+        check(model.ping.angle_grad == 1 && model.scan_revision == scan_revision &&
+                  model.scan[0].data() == cached_scan,
+              "large scan time steps are bounded and never rebuild the full scan");
+        model.change_angle(1);
+        check(!model.scan_playing && model.ping.angle_grad == 2,
+              "manual angle changes pause the 360 scan");
+        model.set_scan_playing(true);
+        model.progress = 0.2;
+        model.playing = true;
+        model.tick(6);
+        check(model.playing && std::abs(model.progress - 0.4) < 1e-10 &&
+                  model.scan_revision == scan_revision && model.scan[0].data() == cached_scan,
+              "active 360 scanning repeats pulse playback beyond five seconds without rebuilding "
+              "the scan");
+        model.playing = false;
+        const double paused_progress = model.progress;
+        const unsigned previous_heading = model.ping.angle_grad;
+        model.tick(0.1);
+        check(!model.playing && model.progress == paused_progress &&
+                  model.ping.angle_grad == (previous_heading + 4) % 400,
+              "pausing the pulse preserves its progress while the scan heading continues");
+        model.set_scan_playing(false);
+        model.progress = 0.2;
+        model.playing = true;
+        model.tick(6);
+        check(!model.playing && model.progress == 1,
+              "single-angle pulse playback still stops after one traversal");
+        model.set_scan_playing(true);
+        model.select_image(0.2, 0);
+        check(!model.scan_playing, "clicking the image pauses scanning to inspect an echo");
+        bool rejected_time = false;
+        try {
+            model.advance_scan(-1);
+        } catch (const std::invalid_argument &) {
+            rejected_time = true;
+        }
+        check(rejected_time, "negative scan time must be rejected");
+        for (const auto &dimensions :
+             {std::pair<int, int>{1000, 700}, {1280, 800}, {1600, 900}, {1920, 1080}}) {
+            const auto layout = viewer::calculate_layout(dimensions.first, dimensions.second);
+            const auto expanded =
+                viewer::calculate_layout(dimensions.first, dimensions.second, true);
+            for (const auto area :
+                 {layout.ray_panel, layout.world, layout.image_panel, layout.image,
+                  layout.transport, layout.inspector, layout.configuration}) {
+                check(area.width > 0 && area.height > 0 && area.x >= 0 && area.y >= 0 &&
+                          area.x + area.width <= static_cast<float>(dimensions.first) &&
+                          area.y + area.height <= static_cast<float>(dimensions.second),
+                      "native layout must keep every active panel inside the window");
+            }
+            check(layout.image.width == layout.image.height &&
+                      layout.ray_panel.x + layout.ray_panel.width < layout.image_panel.x &&
+                      layout.world.height > expanded.world.height && layout.profile.height == 0,
+                  "comparison panels do not overlap; image aspect is fixed; closing profile gives "
+                  "space to geometry");
+        }
         config = model.config;
         config.settings.max_range_m = 0.75;
         check(model.apply(config, 0) && model.echo() == nullptr,

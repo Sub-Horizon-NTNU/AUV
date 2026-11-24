@@ -35,6 +35,17 @@ struct Model {
     bool playing{true};
     Projection projection{Projection::Perspective};
     float orbit_deg{35.0F};
+    float camera_pitch_deg{32.0F};
+    float camera_zoom{1.0F};
+    bool show_particle_markers{true};
+    bool help_open{};
+    bool camera_dragging{};
+    bool settings_open{};
+    bool details_open{};
+    bool profile_open{};
+    bool scan_playing{};
+    double scan_phase_grad{};
+    double scan_speed_grad_s{40.0};
     std::string status{"Illustrative pool and acoustic coefficients. No measured sonar data."};
     bool error{};
 
@@ -42,7 +53,9 @@ struct Model {
     bool apply(const sonar::Config &candidate, unsigned angle);
     void reload();
     void change_angle(int delta);
-    void set_angle(unsigned angle);
+    void set_angle(unsigned angle, bool manual = true);
+    void advance_scan(double seconds);
+    void set_scan_playing(bool enabled);
     void set_channel(Channel new_channel);
     void select(std::size_t index);
     void cycle_echo(int delta);
@@ -54,6 +67,9 @@ struct Model {
     double display_level(double energy) const;
     // Local plan view: +x forward/up, +y left; normalized radius [0,1].
     bool select_image(double local_x, double local_y);
+    void orbit_camera(float yaw_delta_deg, float pitch_delta_deg);
+    void zoom_camera(float wheel_delta);
+    void reset_camera();
 };
 
 sonar::Vec3 path_position(const sonar::Echo &echo, double fraction);

@@ -11,6 +11,21 @@
 
 namespace viewer {
 
+void Model::orbit_camera(float yaw_delta_deg, float pitch_delta_deg) {
+    orbit_deg = std::fmod(orbit_deg + yaw_delta_deg, 360.0F);
+    camera_pitch_deg = std::clamp(camera_pitch_deg + pitch_delta_deg, -80.0F, 80.0F);
+}
+
+void Model::zoom_camera(float wheel_delta) {
+    camera_zoom = std::clamp(camera_zoom * std::exp(-wheel_delta * 0.12F), 0.3F, 3.5F);
+}
+
+void Model::reset_camera() {
+    orbit_deg = 35.0F;
+    camera_pitch_deg = 32.0F;
+    camera_zoom = 1.0F;
+}
+
 Model::Model(std::filesystem::path path) : config_path(std::move(path)) {
     if (!config_path.empty()) {
         config = sonar::read_config(config_path);
@@ -94,7 +109,7 @@ void Model::change_angle(int delta) {
     set_angle(angle);
 }
 
-void Model::set_angle(unsigned angle) {
+void Model::set_angle(unsigned angle, bool manual) {
     auto result = sonar::simulate_ping(config, angle);
     auto front = make_wavefront(config, angle);
     wavefront = std::move(front);
@@ -106,6 +121,37 @@ void Model::set_angle(unsigned angle) {
             select(index);
             break;
         }
+    }
+    if (manual) {
+        scan_playing = false;
+        scan_phase_grad = angle;
+    }
+}
+
+void Model::set_scan_playing(bool enabled) {
+    if (enabled && !scan_playing) {
+        scan_phase_grad = ping.angle_grad;
+    }
+    scan_playing = enabled;
+}
+
+void Model::advance_scan(double seconds) {
+    if (!std::isfinite(seconds) || seconds < 0) {
+        throw std::invalid_argument("scan time step must be finite and nonnegative");
+    }
+    if (!scan_playing) {
+        return;
+    }
+    scan_speed_grad_s = std::clamp(scan_speed_grad_s, 2.0, 80.0);
+    scan_phase_grad = std::fmod(
+        scan_phase_grad + std::fmod(seconds, 400.0 / scan_speed_grad_s) * scan_speed_grad_s, 400.0);
+    const auto angle = static_cast<unsigned>(scan_phase_grad);
+    if (angle != ping.angle_grad) {
+        const double saved_progress = progress;
+        const bool saved_playing = playing;
+        set_angle(angle, false);
+        progress = saved_progress;
+        playing = saved_playing;
     }
 }
 
@@ -208,10 +254,15 @@ bool Model::select_image(double local_x, double local_y) {
 }
 
 void Model::tick(double seconds) {
+    advance_scan(seconds);
     if (playing) {
-        progress = std::min(1.0, progress + seconds / 5.0);
-        if (progress == 1.0) {
-            playing = false;
+        if (scan_playing) {
+            progress = std::fmod(progress + seconds / 5.0, 1.0);
+        } else {
+            progress = std::min(1.0, progress + seconds / 5.0);
+            if (progress == 1.0) {
+                playing = false;
+            }
         }
     }
 }

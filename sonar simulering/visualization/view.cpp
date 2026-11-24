@@ -17,9 +17,7 @@ constexpr Color cyan{74, 221, 230, 255};
 constexpr Color amber{255, 192, 87, 255};
 constexpr Color ghost{216, 147, 255, 255};
 constexpr Color green{129, 228, 149, 255};
-constexpr Rectangle world_area{24, 112, 450, 410};
 constexpr Rectangle sonar_image_area{566, 172, 316, 316};
-constexpr Rectangle chart_area{60, 700, 860, 125};
 
 std::string number(double value, int precision = 2) {
     std::ostringstream stream;
@@ -29,11 +27,12 @@ std::string number(double value, int precision = 2) {
 
 void label(Font font, const std::string &value, float x, float y, int size = 18,
            Color color = text) {
-    DrawTextEx(font, value.c_str(), {x, y}, static_cast<float>(size), 0.5F, color);
+    DrawTextEx(font, value.c_str(), {x, y}, static_cast<float>(std::max(18, size)), 0.5F, color);
 }
 
 void wrapped(Font font, const std::string &value, float x, float y, float width, int size,
              Color color) {
+    size = std::max(18, size);
     std::istringstream words(value);
     std::string word;
     std::string line;
@@ -99,9 +98,12 @@ void draw_world3d(const Model &model, RenderTexture2D target) {
     const Vector3 center = point({pool.length_m / 2, pool.width_m / 2, pool.depth_m / 2});
     const Vector3 pool_center = point({pool.length_m / 2, pool.width_m / 2, pool.depth_m / 2});
     const float azimuth = model.orbit_deg * DEG2RAD;
+    const float elevation = model.camera_pitch_deg * DEG2RAD;
+    const float distance = extent * 1.55F * model.camera_zoom;
     Camera3D camera{};
-    camera.position = {center.x + std::cos(azimuth) * extent * 1.7F, center.y + extent * 1.05F,
-                       center.z + std::sin(azimuth) * extent * 1.7F};
+    camera.position = {center.x + std::cos(azimuth) * std::cos(elevation) * distance,
+                       center.y + std::sin(elevation) * distance,
+                       center.z + std::sin(azimuth) * std::cos(elevation) * distance};
     camera.target = center;
     camera.up = {0, 1, 0};
     camera.fovy = 43;
@@ -122,9 +124,10 @@ void draw_world3d(const Model &model, RenderTexture2D target) {
             }
         }
     }
-    for (const auto &particle : model.particles) {
-        DrawPoint3D(point(particle), Color{66, 106, 80, 255});
-    }
+    if (model.show_particle_markers)
+        for (const auto &particle : model.particles) {
+            DrawPoint3D(point(particle), Color{66, 106, 80, 255});
+        }
     DrawSphere(point(model.config.pose.position_m), marker_scale * 0.018F, cyan);
     if (const auto *echo = model.echo(); echo && !model.wavefront_mode) {
         path3d(*echo, amber);
@@ -144,16 +147,14 @@ void draw_world3d(const Model &model, RenderTexture2D target) {
                        point(front.points[link.second].position_m), cyan);
         }
         for (const auto &sample : front.points) {
-            DrawSphere(point(sample.position_m), marker_scale * 0.006F,
-                       sample.segment_index == 0 ? cyan : amber);
+            DrawPoint3D(point(sample.position_m), sample.segment_index == 0 ? cyan : amber);
         }
     }
     EndMode3D();
     EndTextureMode();
 }
 
-void draw_world2d(const Model &model, Font font) {
-    BeginScissorMode(24, 152, 450, 285);
+void draw_world2d(const Model &model, Font font, Rectangle world_area) {
     const bool side = model.projection == Projection::Side;
     const auto &pool = model.config.pool;
     const double vertical_extent = side ? pool.depth_m : pool.width_m;
@@ -169,8 +170,8 @@ void draw_world2d(const Model &model, Font font) {
         ymin = std::min(0.0, side ? apparent.z : apparent.y);
         ymax = std::max(ymax, side ? apparent.z : apparent.y);
     }
-    const float scale = std::min((world_area.width - 100) / static_cast<float>(xmax - xmin),
-                                 (world_area.height - 150) / static_cast<float>(ymax - ymin));
+    const float scale = std::min((world_area.width - 50) / static_cast<float>(xmax - xmin),
+                                 (world_area.height - 50) / static_cast<float>(ymax - ymin));
     const float left =
         world_area.x + (world_area.width - static_cast<float>(xmax - xmin) * scale) / 2;
     const float bottom =
@@ -189,6 +190,11 @@ void draw_world2d(const Model &model, Font font) {
           17, muted);
     label(font, "x", upper.x + 10, lower.y - 6, 18, muted);
     label(font, side ? "z" : "y", lower.x - 20, upper.y - 12, 18, muted);
+    if (model.show_particle_markers) {
+        for (const auto &particle : model.particles) {
+            DrawPixelV(project(particle), Color{66, 106, 80, 255});
+        }
+    }
     for (const auto &echo : model.ping.echoes) {
         for (std::size_t index = 1; index <= echo.outward_hits; ++index) {
             DrawLineV(project(echo.path[index - 1].position_m),
@@ -220,66 +226,6 @@ void draw_world2d(const Model &model, Font font) {
         }
     }
     DrawCircleV(project(model.config.pose.position_m), 6, cyan);
-    EndScissorMode();
-}
-
-void profile(Model &model, Vector2 mouse, Font font) {
-    DrawRectangleRounded({24, 637, 930, 226}, 0.04F, 4, panel);
-    label(font, "RECEIVED ECHO PROFILE", 44, 653, 20);
-    label(font, "cyan: direct   amber: multipath   green: particles", 410, 655, 17, muted);
-    const auto height = [&](double energy) {
-        return static_cast<float>(model.display_level(energy)) * chart_area.height;
-    };
-    for (int level = 0; level <= 3; ++level) {
-        const float y = chart_area.y + static_cast<float>(level) * chart_area.height / 3;
-        DrawLineV({chart_area.x, y}, {chart_area.x + chart_area.width, y}, Color{48, 65, 82, 255});
-        label(font, number(-model.dynamic_range_db * level / 3 - model.gain_db, 0), 25, y - 7, 13,
-              muted);
-    }
-    const auto &bins = model.ping.profile;
-    for (std::size_t index = 0; index < bins.size(); ++index) {
-        const float x = chart_area.x + static_cast<float>(bins[index].center_range_m /
-                                                          model.config.settings.max_range_m) *
-                                           chart_area.width;
-        const float bottom = chart_area.y + chart_area.height;
-        if (model.channel == Channel::Combined || model.channel == Channel::Direct) {
-            DrawLineEx({x, bottom}, {x, bottom - height(bins[index].direct_intensity)}, 2, cyan);
-        }
-        if (model.channel == Channel::Combined || model.channel == Channel::Multipath) {
-            DrawLineEx({x + 1, bottom}, {x + 1, bottom - height(bins[index].multipath_intensity)},
-                       2, amber);
-        }
-        if (model.channel == Channel::Combined || model.channel == Channel::Volume) {
-            DrawLineEx({x + 2, bottom}, {x + 2, bottom - height(bins[index].volume_intensity)}, 2,
-                       green);
-        }
-    }
-    const float blind_width =
-        static_cast<float>(sonar::minimum_range_m / model.config.settings.max_range_m) *
-        chart_area.width;
-    DrawRectangleRec({chart_area.x, chart_area.y, blind_width, chart_area.height},
-                     Color{103, 115, 128, 50});
-    if (const auto *echo = model.echo()) {
-        const float x = chart_area.x + static_cast<float>(echo->apparent_range_m /
-                                                          model.config.settings.max_range_m) *
-                                           chart_area.width;
-        DrawLineV({x, chart_area.y - 5}, {x, chart_area.y + chart_area.height}, WHITE);
-    }
-    for (int tick = 0; tick <= 4; ++tick) {
-        const float x = chart_area.x + static_cast<float>(tick) * chart_area.width / 4;
-        label(font, number(model.config.settings.max_range_m * tick / 4.0, 1), x - 10, 830, 15,
-              muted);
-    }
-    label(font, "Apparent range (m)  |  click a peak to inspect its nearest echo", 232, 841, 15,
-          muted);
-    label(font,
-          "dB relative to entire scan peak (shared with image); gain " + number(model.gain_db, 0) +
-              " dB",
-          44, 680, 15, muted);
-    if (CheckCollisionPointRec(mouse, chart_area) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        model.select_range((mouse.x - chart_area.x) / chart_area.width *
-                           model.config.settings.max_range_m);
-    }
 }
 
 void inspector(Model &model, Vector2 mouse, Font font) {
@@ -416,13 +362,8 @@ void configuration(Model &model, Vector2 mouse, Font font) {
         if (button(font, "+", {1362, 703, 30, 28}, mouse)) {
             settings.volume_strength = std::min(1.0, settings.volume_strength + 0.001);
         }
-        wrapped(font,
-                "750 kHz default; wavelength " +
-                    number(settings.sound_speed_m_s / settings.frequency_hz * 1000) + " mm. Seed " +
-                    std::to_string(settings.volume_seed) +
-                    ". Smooth walls return strongly near normal incidence; particles are "
-                    "single-scatter proxies.",
-                998, 749, 394, 15, muted);
+        wrapped(font, "Illustrative surface / particle model. Not calibrated to a pool.", 998, 749,
+                394, 18, muted);
     }
     if (button(font, "Apply draft", {998, 807, 180, 36}, mouse)) {
         model.apply(model.draft, model.ping.angle_grad);
@@ -491,13 +432,13 @@ void render_world(const Model &model, RenderTexture2D world) {
     draw_world3d(model, world);
 }
 
-void render_sonar(const Model &model, SonarTexture &image) {
-    if (image.texture.id && image.revision == model.scan_revision &&
+void render_sonar(const Model &model, SonarTexture &image, int requested_size) {
+    const int size = std::clamp(requested_size, 384, 2048);
+    if (image.texture.id && image.texture.width == size && image.revision == model.scan_revision &&
         image.channel == model.channel && image.gain_db == model.gain_db &&
         image.dynamic_range_db == model.dynamic_range_db) {
         return;
     }
-    constexpr int size = 384;
     Image pixels = GenImageColor(size, size, background);
     auto *colors = static_cast<Color *>(pixels.data);
     for (int y = 0; y < size; ++y) {
@@ -540,127 +481,343 @@ void render_sonar(const Model &model, SonarTexture &image) {
     image.dynamic_range_db = model.dynamic_range_db;
 }
 
+void update_camera_input(Model &model, const Layout &layout, CameraInput &input, Vector2 mouse) {
+    const bool over_drawer =
+        (model.settings_open || model.details_open) &&
+        CheckCollisionPointRec(mouse, {layout.configuration.x, layout.configuration.y,
+                                       layout.configuration.width, layout.configuration.height});
+    if (model.help_open || model.projection != Projection::Perspective) {
+        input.dragging = false;
+        model.camera_dragging = false;
+        return;
+    }
+    if (input.dragging) {
+        if (!IsMouseButtonDown(input.button)) {
+            input.dragging = false;
+        } else {
+            model.orbit_camera(-(mouse.x - input.previous.x) / layout.world.width * 180,
+                               (mouse.y - input.previous.y) / layout.world.height * 120);
+            input.previous = mouse;
+        }
+    } else if (!over_drawer &&
+               CheckCollisionPointRec(mouse, {layout.world.x, layout.world.y, layout.world.width,
+                                              layout.world.height})) {
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+            input.dragging = true;
+            input.button =
+                IsMouseButtonPressed(MOUSE_BUTTON_LEFT) ? MOUSE_BUTTON_LEFT : MOUSE_BUTTON_RIGHT;
+            input.previous = mouse;
+        }
+    }
+    if (!over_drawer && CheckCollisionPointRec(mouse, {layout.world.x, layout.world.y,
+                                                       layout.world.width, layout.world.height})) {
+        model.zoom_camera(GetMouseWheelMove());
+    }
+    model.camera_dragging = input.dragging;
+}
+
 void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, Vector2 mouse,
-                    Font font) {
+                    Font font, const Layout &layout) {
     ClearBackground(background);
-    label(font, "PING360  /  FOLLOW THE SOUND", 24, 20, 28);
-    label(font,
-          "Compare ray geometry with a stationary 400-angle sonar image. Smooth walls, rough "
-          "surfaces and particles change the return.",
-          24, 55, 18, muted);
-    label(font, "RAY PATH", 24, 88, 20);
-    label(font, "SIMULATED SONAR IMAGE", 494, 88, 20);
-    if (button(font, "3D", {190, 78, 54, 30}, mouse, model.projection == Projection::Perspective)) {
-        model.projection = Projection::Perspective;
+    const float s = layout.scale;
+    const auto box = [](Box b) { return Rectangle{b.x, b.y, b.width, b.height}; };
+    const auto text_at = [&](const std::string &value, float x, float y, int size = 18,
+                             Color color = text) {
+        label(font, value, x, y, std::max(18, static_cast<int>(static_cast<float>(size) * s)),
+              color);
+    };
+    Vector2 active_mouse =
+        model.help_open || model.camera_dragging ? Vector2{-10000, -10000} : mouse;
+    const float h = std::max(25.0F, 29 * s);
+    text_at("PING360 / FOLLOW THE SOUND", layout.header.x, layout.header.y, 25);
+    text_at("Compare physical paths with apparent sonar returns", layout.header.x,
+            layout.header.y + 31 * s, 15, muted);
+    float header_x = layout.header.x + layout.header.width - 380 * s;
+    if (button(font, "Profile", {header_x, layout.header.y, 85 * s, h}, active_mouse,
+               model.profile_open)) {
+        model.profile_open = !model.profile_open;
     }
-    if (button(font, "Top", {250, 78, 54, 30}, mouse, model.projection == Projection::Top)) {
-        model.projection = Projection::Top;
+    header_x += 94 * s;
+    if (button(font, "Details", {header_x, layout.header.y, 85 * s, h}, active_mouse,
+               model.details_open)) {
+        model.details_open = !model.details_open;
+        model.settings_open = false;
     }
-    if (button(font, "Side", {310, 78, 54, 30}, mouse, model.projection == Projection::Side)) {
-        model.projection = Projection::Side;
+    header_x += 94 * s;
+    if (button(font, "Settings", {header_x, layout.header.y, 85 * s, h}, active_mouse,
+               model.settings_open)) {
+        model.settings_open = !model.settings_open;
+        model.details_open = false;
     }
-    if (button(font, "Orbit", {370, 78, 104, 30}, mouse)) {
-        model.orbit_deg += 25;
+    header_x += 94 * s;
+    if (button(font, "Help [H]", {header_x, layout.header.y, 95 * s, h}, active_mouse)) {
+        model.help_open = true;
     }
-    DrawRectangleRec(world_area, background);
+    if (IsKeyPressed(KEY_H)) {
+        model.help_open = !model.help_open;
+    }
+    const bool drawer = model.settings_open || model.details_open;
+    const bool over_drawer = drawer && CheckCollisionPointRec(mouse, box(layout.configuration));
+    const Vector2 content_mouse =
+        model.help_open || model.camera_dragging || over_drawer ? Vector2{-10000, -10000} : mouse;
+    if (!model.help_open) {
+        if (IsKeyPressed(KEY_LEFT)) {
+            model.change_angle(-1);
+        }
+        if (IsKeyPressed(KEY_RIGHT)) {
+            model.change_angle(1);
+        }
+        if (IsKeyPressed(KEY_UP)) {
+            model.cycle_echo(-1);
+        }
+        if (IsKeyPressed(KEY_DOWN)) {
+            model.cycle_echo(1);
+        }
+        if (IsKeyPressed(KEY_SPACE)) {
+            model.playing = !model.playing;
+        }
+    }
+    const auto ray = layout.ray_panel;
+    DrawRectangleRec(box(ray), panel);
+    text_at("RAY GEOMETRY", ray.x + 10 * s, ray.y + 8 * s, 18);
+    float x = ray.x + ray.width - 245 * s;
+    const char *views[] = {"3D", "Top", "Side", "Reset"};
+    for (int i = 0; i < 4; ++i) {
+        if (button(font, views[i], {x, ray.y + 5 * s, 54 * s, h}, content_mouse,
+                   i < 3 && static_cast<int>(model.projection) == i)) {
+            if (i < 3) {
+                model.projection = static_cast<Projection>(i);
+            } else {
+                model.reset_camera();
+            }
+        }
+        x += 60 * s;
+    }
+    if (button(font, "Ray paths", {ray.x + 10 * s, ray.y + 36 * s, 100 * s, h}, content_mouse,
+               !model.wavefront_mode)) {
+        model.wavefront_mode = false;
+        model.progress = 0;
+    }
+    if (button(font, "Wavefront", {ray.x + 118 * s, ray.y + 36 * s, 110 * s, h}, content_mouse,
+               model.wavefront_mode)) {
+        model.wavefront_mode = true;
+        model.progress = 0;
+    }
+    if (button(font, model.show_particle_markers ? "Particle markers: on" : "Particle markers: off",
+               {ray.x + 236 * s, ray.y + 36 * s, 195 * s, h}, content_mouse,
+               model.show_particle_markers)) {
+        model.show_particle_markers = !model.show_particle_markers;
+    }
+    const auto area = layout.world;
+    BeginScissorMode(static_cast<int>(area.x), static_cast<int>(area.y),
+                     static_cast<int>(area.width), static_cast<int>(area.height));
     if (model.projection == Projection::Perspective) {
         DrawTexturePro(world.texture,
                        {0, 0, static_cast<float>(world.texture.width),
                         -static_cast<float>(world.texture.height)},
-                       world_area, {0, 0}, 0, WHITE);
+                       box(area), {0, 0}, 0, WHITE);
     } else {
-        draw_world2d(model, font);
+        draw_world2d(model, font, box(area));
     }
-    DrawRectangleLinesEx(world_area, 1, Color{58, 78, 98, 255});
-    if (button(font, "Ray paths", {35, 122, 150, 28}, mouse, !model.wavefront_mode)) {
-        model.wavefront_mode = false;
-        model.progress = 0;
-        model.playing = true;
+    EndScissorMode();
+    text_at(model.wavefront_mode ? "Geometric front: not pressure or interference"
+                                 : "Amber: physical path   Purple: apparent position",
+            ray.x + 10 * s, ray.y + ray.height - 44 * s, 14, muted);
+    text_at("Drag in 3D to orbit; wheel to zoom", ray.x + 10 * s, ray.y + ray.height - 22 * s, 13,
+            muted);
+    // Retain established controls in an independent native vector panel, not a full-window bitmap.
+    const auto draw_panel = [&](Rectangle source, Box destination, const auto &draw,
+                                Vector2 input) {
+        DrawRectangleRec(box(destination), panel);
+        const float zoom =
+            std::min(destination.width / source.width, destination.height / source.height);
+        Camera2D camera{};
+        camera.target = {source.x, source.y};
+        camera.offset = {destination.x + (destination.width - source.width * zoom) / 2,
+                         destination.y};
+        camera.zoom = zoom;
+        const Vector2 local{source.x + (input.x - camera.offset.x) / zoom,
+                            source.y + (input.y - camera.offset.y) / zoom};
+        BeginScissorMode(static_cast<int>(destination.x), static_cast<int>(destination.y),
+                         static_cast<int>(destination.width), static_cast<int>(destination.height));
+        BeginMode2D(camera);
+        draw(local);
+        EndMode2D();
+        EndScissorMode();
+    };
+    draw_panel(
+        {494, 112, 460, 410}, layout.image_panel,
+        [&](Vector2 local) { sonar_panel(model, sonar_image, local, font); }, content_mouse);
+    // Native timeline: scan rotation and echo propagation have independent clocks.
+    const auto t = layout.transport;
+    float y = t.y;
+    text_at("Angle " + std::to_string(model.ping.angle_grad) + " grad / " +
+                number(model.ping.angle_grad * 0.9, 1) + " deg",
+            t.x, y + 4 * s, 17);
+    const auto angle = static_cast<unsigned>(
+        std::lround(slider({t.x + t.width * .48F, y, t.width * .50F, 25 * s},
+                           model.ping.angle_grad / 399.0, content_mouse, cyan) *
+                    399));
+    if (angle != model.ping.angle_grad) {
+        model.set_angle(angle);
     }
-    if (button(font, "Wavefront", {195, 122, 150, 28}, mouse, model.wavefront_mode)) {
-        model.wavefront_mode = true;
-        model.progress = 0;
-        model.playing = true;
+    y += 30 * s;
+    if (button(font, model.scan_playing ? "Pause 360 scan" : "Play 360 scan", {t.x, y, 150 * s, h},
+               content_mouse, model.scan_playing)) {
+        model.set_scan_playing(!model.scan_playing);
     }
-    label(font,
-          model.wavefront_mode ? "Cyan: incident front   Amber: reflected front"
-                               : "Cyan: sonar / pulse    Amber: reflected path",
-          35, 466, 16, muted);
-    label(font,
-          model.wavefront_mode ? "Coarse geometric beamfront; not a pressure field"
-                               : "Green: water particles",
-          35, 487, 15, model.wavefront_mode ? muted : green);
-    label(font,
-          model.wavefront_mode ? "One-way propagation within the 2 x 25 degree beam"
-                               : "Purple: apparent echo position (may be offscreen)",
-          35, 445, 15, model.wavefront_mode ? muted : ghost);
-    sonar_panel(model, sonar_image, mouse, font);
-
-    if (IsKeyPressed(KEY_LEFT)) {
-        model.change_angle(-1);
+    if (button(font, "-", {t.x + 160 * s, y, 28 * s, h}, content_mouse)) {
+        model.scan_speed_grad_s = std::max(2.0, model.scan_speed_grad_s - 10);
     }
-    if (IsKeyPressed(KEY_RIGHT)) {
-        model.change_angle(1);
+    if (button(font, "+", {t.x + 196 * s, y, 28 * s, h}, content_mouse)) {
+        model.scan_speed_grad_s = std::min(80.0, model.scan_speed_grad_s + 10);
     }
-    if (IsKeyPressed(KEY_UP)) {
-        model.cycle_echo(-1);
-    }
-    if (IsKeyPressed(KEY_DOWN)) {
-        model.cycle_echo(1);
-    }
-    if (IsKeyPressed(KEY_SPACE)) {
-        model.playing = !model.playing;
-    }
-    label(font,
-          "Ping angle  " + std::to_string(model.ping.angle_grad) + " grad  /  " +
-              number(model.ping.angle_grad * 0.9, 1) + " deg    [Left / Right]",
-          26, 539, 18);
-    const double angle = slider({555, 532, 398, 28}, model.ping.angle_grad / 399.0, mouse, cyan);
-    const auto angle_grad = static_cast<unsigned>(std::lround(angle * 399));
-    if (angle_grad != model.ping.angle_grad) {
-        model.set_angle(angle_grad);
-    }
-    if (button(font, model.playing ? "Pause" : "Play", {24, 576, 96, 32}, mouse)) {
+    text_at(number(400 / model.scan_speed_grad_s, 1) + " s/revolution (illustration, static pose)",
+            t.x + 238 * s, y + 5 * s, 15, muted);
+    y += 32 * s;
+    if (button(font, model.playing ? "Pause pulse" : "Play pulse", {t.x, y, 110 * s, h},
+               content_mouse)) {
         if (model.progress >= 1) {
             model.progress = 0;
         }
         model.playing = !model.playing;
     }
-    if (button(font, "Replay", {130, 576, 96, 32}, mouse)) {
+    if (button(font, "Replay", {t.x + 120 * s, y, 80 * s, h}, content_mouse)) {
         model.progress = 0;
         model.playing = true;
     }
-    const double scrubbed = slider({248, 578, 420, 28}, model.progress, mouse, amber);
-    if (scrubbed != model.progress) {
-        model.progress = scrubbed;
+    const double progress =
+        slider({t.x + 218 * s, y, t.width - 230 * s, h}, model.progress, content_mouse, amber);
+    if (progress != model.progress) {
+        model.progress = progress;
         model.playing = false;
     }
-    label(font,
-          model.wavefront_mode    ? "ONE-WAY FRONT"
-          : model.progress <= 0.5 ? "OUTWARD"
-                                  : "RETURN / same path",
-          690, 584, 17, model.progress <= 0.5 ? cyan : amber);
+    std::string timing = "Manual angle/image selection pauses the 360 scan.";
     if (model.wavefront_mode) {
-        label(font,
-              "5 s playback | one-way window " + number(model.wavefront.duration_s() * 1000) +
-                  " ms | t = " + number(model.progress * model.wavefront.duration_s() * 1000) +
-                  " ms | Space: pause",
-              25, 616, 15, muted);
+        timing = "One-way front t=" + number(model.progress * model.wavefront.duration_s() * 1000) +
+                 " ms; slowed to 5 s playback.";
     } else if (const auto *echo = model.echo()) {
-        label(font,
-              "5 s playback, slowed from " + number(echo->travel_time_s * 1000) +
-                  " ms acoustic time  |  t = " +
-                  number(echo->travel_time_s * model.progress * 1000) + " ms  |  Space: pause",
-              25, 616, 15, muted);
+        timing = "Echo: range " + number(echo->apparent_range_m) + " m / return " +
+                 number(echo->travel_time_s * 1000) + " ms; " +
+                 (model.progress <= .5 ? "outward" : "return on same route");
     }
-    profile(model, mouse, font);
-    inspector(model, mouse, font);
-    configuration(model, mouse, font);
-    label(font, model.status, 24, 868, 16, model.error ? amber : muted);
-    label(font,
-          "MODEL LIMIT: reciprocal surface paths + sparse single-particle returns. No phase, "
-          "diffraction or calibrated energy; no real-data classifier.",
-          24, 889, 13, muted);
+    text_at(timing, t.x, t.y + t.height - 17 * s, 14, muted);
+    if (model.profile_open) {
+        // Profile geometry uses its whole native width; text and the range axis stay readable.
+        const auto p = layout.profile;
+        DrawRectangleRec(box(p), panel);
+        text_at("ECHO PROFILE  |  direct / multipath / particles", p.x + 10 * s, p.y + 7 * s, 16,
+                muted);
+        const Rectangle plot{p.x + 38 * s, p.y + 33 * s, p.width - 54 * s, p.height - 80 * s};
+        const float base = plot.y + plot.height;
+        for (int level = 0; level <= 2; ++level) {
+            const float py = plot.y + static_cast<float>(level) * plot.height / 2;
+            DrawLineV({plot.x, py}, {plot.x + plot.width, py}, Color{48, 65, 82, 255});
+            text_at(number(-model.dynamic_range_db * level / 2 - model.gain_db, 0), p.x + 3 * s,
+                    py - 6, 13, muted);
+        }
+        for (const auto &bin : model.ping.profile) {
+            const float px = plot.x + static_cast<float>(bin.center_range_m /
+                                                         model.config.settings.max_range_m) *
+                                          plot.width;
+            const auto line = [&](double energy, Color color, float off) {
+                DrawLineV({px + off, base},
+                          {px + off,
+                           base - static_cast<float>(model.display_level(energy)) * plot.height},
+                          color);
+            };
+            if (model.channel == Channel::Combined || model.channel == Channel::Direct) {
+                line(bin.direct_intensity, cyan, 0);
+            }
+            if (model.channel == Channel::Combined || model.channel == Channel::Multipath) {
+                line(bin.multipath_intensity, amber, 1);
+            }
+            if (model.channel == Channel::Combined || model.channel == Channel::Volume) {
+                line(bin.volume_intensity, green, 2);
+            }
+        }
+        for (int tick = 0; tick <= 4; ++tick) {
+            text_at(number(model.config.settings.max_range_m * tick / 4, 1),
+                    plot.x + static_cast<float>(tick) * plot.width / 4 - 8, base + 3, 13, muted);
+        }
+        text_at("Apparent range (m); dB reference shared with scan image", p.x + 10 * s,
+                p.y + p.height - 18, 13, muted);
+        if (CheckCollisionPointRec(content_mouse, plot) &&
+            IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            model.set_scan_playing(false);
+            model.select_range((content_mouse.x - plot.x) / plot.width *
+                               model.config.settings.max_range_m);
+        }
+    }
+    if (drawer) {
+        const Box p = model.settings_open ? layout.configuration : layout.inspector;
+        DrawRectangle(static_cast<int>(p.x - 5), static_cast<int>(p.y - 5),
+                      static_cast<int>(p.width + 10), static_cast<int>(p.height + 10),
+                      Color{3, 9, 15, 235});
+        const Vector2 drawer_mouse =
+            model.help_open || model.camera_dragging ? Vector2{-10000, -10000} : mouse;
+        if (model.settings_open) {
+            draw_panel(
+                {978, 457, 438, 406}, p, [&](Vector2 local) { configuration(model, local, font); },
+                drawer_mouse);
+        } else {
+            draw_panel(
+                {978, 78, 438, 365}, p, [&](Vector2 local) { inspector(model, local, font); },
+                drawer_mouse);
+        }
+    }
+    text_at(model.status, layout.footer.x, layout.footer.y + 3, 14, model.error ? amber : muted);
+    text_at("Approximate geometry/scattering; no calibrated pressure, interference or "
+            "measured-data classification.",
+            layout.footer.x, layout.footer.y + 23 * s, 13, muted);
+    if (model.help_open) {
+        DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Color{0, 0, 0, 210});
+        const float width = std::min(850.0F, static_cast<float>(GetScreenWidth()) - 40),
+                    height = std::min(600.0F, static_cast<float>(GetScreenHeight()) - 36);
+        const float left = (static_cast<float>(GetScreenWidth()) - width) / 2,
+                    top = (static_cast<float>(GetScreenHeight()) - height) / 2;
+        DrawRectangleRounded({left, top, width, height}, .03F, 4, panel);
+        text_at("READING THE SONAR", left + 20 * s, top + 18 * s, 24);
+        float py = top + 62 * s;
+        const auto paragraph = [&](const char *heading, const char *body) {
+            text_at(heading, left + 20 * s, py, 18, cyan);
+            py += 27;
+            std::istringstream words(body);
+            std::string word, line;
+            while (words >> word) {
+                const auto candidate = line.empty() ? word : line + ' ' + word;
+                if (!line.empty() &&
+                    MeasureTextEx(font, candidate.c_str(), 18.0F, .5F).x > width - 40 * s) {
+                    text_at(line, left + 20 * s, py, 17);
+                    py += 24;
+                    line = word;
+                } else {
+                    line = candidate;
+                }
+            }
+            text_at(line, left + 20 * s, py, 17);
+            py += 38;
+        };
+        paragraph("Why does multipath make a larger ghost rectangle?",
+                  "The sonar shows half the full sound route. A wall 4 m away gives an 8 m "
+                  "roundtrip and is shown at 4 m. A reflected 12 m roundtrip is shown at 6 m along "
+                  "the head bearing, even if no wall is there.");
+        paragraph("The circles are a ruler, not pool walls",
+                  "Rings mark apparent range. Bright shapes come from returns. Direct, Multi and "
+                  "Particles isolate modeled sources with one shared brightness reference.");
+        paragraph("One narrow fan rotates through 360 degrees",
+                  "Ping360 has a nominal 2 degree horizontal by 25 degree vertical beam. One ping "
+                  "illuminates that fan, not the entire circle. Play 360 scan uses an illustration "
+                  "speed with a stationary vehicle.");
+        paragraph("Markers and fronts are viewing aids",
+                  "Particle markers only hide background dots; particle echoes remain enabled. "
+                  "Wavefront is geometric, not pressure or interference. Drag in 3D to orbit, "
+                  "wheel to zoom, Reset to restore.");
+        if (button(font, "Close help [H]",
+                   {left + width / 2 - 80 * s, top + height - 40 * s, 160 * s, 28 * s}, mouse)) {
+            model.help_open = false;
+        }
+    }
 }
 
 } // namespace viewer
