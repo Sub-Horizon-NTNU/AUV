@@ -84,6 +84,7 @@ Compare the selected ping's paths with a cached 400-angle simulated sonar image:
 | Control | Action |
 | --- | --- |
 | `3D`, `Top`, `Side`; drag in 3D; mouse wheel; `Reset` | Change projection, orbit with either mouse button, zoom or reset the camera. |
+| `Align sonar` / `Pool frame` | Show receiver-centred sonar-local Top (+X up, +Y left), or restore pool-frame Top. |
 | Left/Right arrows or angle slider | Change sonar head angle. |
 | Up/Down arrows or echo `<` / `>` | Select another model echo. |
 | Space or `Pause` / `Play`; `Replay`; progress slider | Pause, replay or scrub the selected sound path. |
@@ -96,10 +97,11 @@ Compare the selected ping's paths with a cached 400-angle simulated sonar image:
 
 Draft edits are not saved to the config file. Orientation and other settings remain configurable through the file. The inspector shows total path, displayed range (`path / 2`), physical return time in milliseconds and contact information.
 
+`Align sonar` applies the inverse full sonar pose so geometry matches the sonar image; selecting 3D or Side exits that alignment. 3D remains a free pool-frame camera with posed sonar axes, not an aligned 3D view. Axis colours are X red, Y green and Z blue. Sparse wavefront arrows show actual propagation direction: cyan before reflection, amber afterward, with only the wall-normal component reversed. Arrow length is a display glyph, not energy, pressure, a front normal or wake. `--align-sonar` selects the aligned startup view for QA.
+
 Cyan marks direct surface energy and the outward pulse; amber marks multipath/return paths and green marks particle contributions. Purple is the **apparent straight-line location**, not a real object, and may lie outside the view. Ray-path playback stretches the selected roundtrip to five seconds. Image and profile share one fixed reference: the maximum **combined** bin over all 400 angles. Gain and span change only display scaling (`10 log10(energy/reference) + gain`), not the physics; default span is 80 dB. These are not calibrated acoustic dB. The image is simulated, not measured sonar data. Configuration changes rebuild the scan/cloud; angle changes recompute only the selected ping, while channel/gain/span changes reuse scan data.
 
 Wavefront mode now uses 32 × 192 rays (6144) in an ideal rectangular mirror geometry: fold `origin + direction*c*t` into the pool. Rays persist for the full one-way `max_range_m/c` window regardless of material energy or echo-contact budget; wall-crossing seam vertices keep neighboring patches connected without false chords across walls. Playback slows that window to five seconds. This is geometry, not pressure, FDTD, interference, diffuse branching or particle/bubble-scattered fronts; it carries no acoustic amplitude model and is separate from the predicted received echoes. The API permits up to 262144 rays.
-
 
 The default view keeps the two large comparison panels; open `Profile`, `Details` or `Settings` as needed. `Help` (H) explains beam/range conventions and direct versus multipath examples. `Particle markers` hides only background cloud markers in all geometry views; it leaves particle physics, sonar image and selected particle returns intact. `Play 360 scan` rotates the stationary head independently at an illustrative default 40 grad/s (10 seconds/revolution), adjustable with speed buttons. Manual angle/image selection pauses scanning. Pulse playback repeats while scanning; pausing the pulse does not pause heading rotation. These are display clocks, not Ping360 hardware timing.
 
@@ -202,8 +204,9 @@ Get-ChildItem include,src,tests -Recurse -File -Include *.hpp,*.cpp | ForEach-Ob
 
 Scattering/image implementation `cac4c46eaeb3673eb2e3ae03cdbe82ae06a90545` passed 5/5 viewer-enabled and 3/3 viewer-disabled CTest, format and build checks on the same Windows toolchain. Tests cover roughness energy bounds/angles, particle zero/off/seed/beam/timing/pose, fixed scan reference/cache and empty-channel transitions, plus geometric timing/reflection/history links. Independent CSV inspection checked 51,799 echoes including 955 volume returns and 240,000 bins for finite three-channel sums, IDs, range and timing. Eight-frame scattering and wavefront screenshots were visually inspected; complete GUI control automation was not performed. Earlier commits above are historical evidence; the core and example configuration have now changed.
 
-
 Native layout/camera/scan and analytic-front revision `a658584c17e1a642dc8e0b24b95cdac80ec34cc0` passed 5/5 CTest and independent review/format checks on the same Windows toolchain. Renders at 1000×700, 1280×800, 1600×900 and 1920×1080, including help/settings, were inspected. The latest front supersedes the earlier retained-contact truncation. Core scattering/config/CSV are unchanged from `cac4c46`; full GUI control automation was not performed.
+
+Alignment/direction revision `238c3c27482d5283f0014f45f5387a9c57f80a01` passed 5/5 CTest and independent review/format checks. Tests cover full-pose alignment, unchanged scan caching and reflected directions at walls/corners; alignment and 3D direction screenshots were inspected. Core/config/CSV are unchanged. GUI click automation was not performed.
 
 These are numerical/software checks, not pool or hardware validation. Asymmetric multipath, enumeration of purely specular closed paths, interference, diffraction, side lobes, resolved rough geometry and electronics are absent. Frequency affects only the roughness heuristic; no wave field or hardware protocol is solved. Real-data classification, scan motion and calibration remain unverified.
 

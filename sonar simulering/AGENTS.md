@@ -72,3 +72,6 @@
   review/format and multi-size render inspection passed; no complete GUI input automation.
   `layout.*` owns native sizing; model owns camera, scan clock and marker visibility.
   The 6144-ray front uses analytic folds/seam links. Particle visibility is display-only.
+- Alignment/direction baseline `238c3c27482d5283f0014f45f5387a9c57f80a01`: 5/5 tests,
+  independent review/format and screenshot checks. Alignment is full-pose sonar-local
+  Top only; 3D remains pool-frame. Front arrows use folded propagation derivatives.
