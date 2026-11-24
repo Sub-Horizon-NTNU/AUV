@@ -6,6 +6,44 @@ The model covers **reciprocal backscatter paths**, not every possible multipath 
 
 ## Build and run
 
+### VS Code on Windows
+
+Open [Sonar.code-workspace](../Sonar.code-workspace) from the repository root. The prepared machine already has VS Code, the recommended Microsoft C/C++ and CMake Tools extensions, and the required compiler/debugger tools. If prompted about Workspace Trust, trust the workspace only if the project is trusted.
+
+For a fresh checkout, run Setup once from the **repository root** in Windows PowerShell, then open or reopen the workspace:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\sonar simulering\scripts\dev.ps1' -Action Setup
+```
+
+Setup discovers GCC, CMake, Ninja, CTest and GDB on `PATH` or in an installed CLion bundle. It generates local `.vscode/settings.json` and `launch.json` with the discovered paths. It does not download tools; install missing prerequisites and rerun Setup if discovery fails. The current machine reuses CLion's installed tools without requiring CLion IDE setup.
+
+Use **Ctrl+Shift+B** to build. For other actions, open the Command Palette, choose **Tasks: Run Task**, then select:
+
+| Task | Result |
+| --- | --- |
+| `Sonar: Setup` | Generate or refresh the managed local editor/debug configuration. |
+| `Sonar: Configure` | Configure the separate Debug build in `build-vscode`. |
+| `Sonar: Build` | Configure and build the simulator and tests; default build task. |
+| `Sonar: Test` | Build and run CTest. |
+| `Sonar: Run` | Build and calculate one ping with `examples/pool.cfg`. |
+| `Sonar: Scan` | Build and calculate all 400 stationary angles. |
+| `Sonar: Prepare debug` | F5 pre-launch task: build and preserve previous debug output. |
+
+**F5** uses the generated `Sonar: Debug simulator` launch configuration and GDB. Its pre-launch task moves existing `output/debug-current` into a unique directory under `output/debug-history`, preserving the files before the next launch. New debug results go to `output/debug-current`. Run and Scan automatically choose fresh `output/ping-<timestamp>-<id>` or `output/scan-<timestamp>-<id>` directories, printed in the terminal.
+
+The same helper can be used from the repository root without editor shortcuts:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\sonar simulering\scripts\dev.ps1' -Action Build
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\sonar simulering\scripts\dev.ps1' -Action Test
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\sonar simulering\scripts\dev.ps1' -Action Run
+```
+
+Setup is repeatable for files it generated and keeps one named simulator debug configuration. An existing settings/launch file without the script's ownership header is preserved and causes Setup to stop. Back up that file and remove it from the generated destination before retrying; keep any needed custom settings in the backup for deliberate reapplication. Local settings, launch configuration, build and output are ignored by Git. Rerun Setup after moving the checkout or changing tools. The process-specific execution-policy option and tool `PATH` setup do not change global Windows policy or environment settings.
+
+### CLion or manual CMake
+
 Open this folder, `sonar simulering`, as a CMake project in CLion. Select the bundled MinGW toolchain and the `sonar_sim` target. Set its working directory to this folder and program arguments to:
 
 ```text
@@ -94,6 +132,8 @@ Use `sonar::simulate_ping(Config, angle_grad)` from [simulator.hpp](include/sona
 ## Verification and limits
 
 On 2026-11-24, implementation commit `9c5c44c95c9501bacfbb26b6d166e85afc3627a7` built without warnings using Windows, CLion 2024.3.2 bundled GCC 13.1.0, CMake 3.30.5 and Ninja (Debug). All 3 CTest entries passed: seven numerical groups, CLI help and invalid-angle rejection. Independent inspection of a default 400-angle scan checked 50,852 closed echo paths and 240,000 bins for box bounds, path lengths, return times and finite nonnegative channel energies. Reusing an output directory was rejected without changing the existing echo file.
+
+The VS Code environment at commit `9dc0c892128ecb0a7d8b2770f777038f70f34802` was verified on Windows PowerShell 5.1 on the same date, using VS Code 1.147.0, C/C++ 1.35.6, CMake Tools 1.25.10 and the existing GCC/CMake/Ninja tools plus GDB 15.2. Checks covered repeated Setup, preservation of unowned configuration, clean configure/build, 3/3 CTest, repeated fresh Run exports, a 400-angle Scan and preservation of previous debug output. GDB command-line debugging stopped at `main.cpp` and completed normally. The trusted workspace and C++/CMake views were observed in VS Code, but GUI task shortcuts and F5 were not tested end-to-end. The C++ simulator and CMake files were unchanged by this environment work, so the earlier numerical evidence retains its original scope.
 
 Formatting was checked on all six handwritten C++ files with CLion's bundled clang-format 20.0.0git (`fd2c1bf18bb22baa1ad38834dce4947d891f67d1`). From this folder:
 

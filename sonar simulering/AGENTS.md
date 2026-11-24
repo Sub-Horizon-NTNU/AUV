@@ -20,6 +20,9 @@
 - `src/io.cpp` and `include/sonar/io.hpp`: key/value configuration and CSV exports.
 - `src/main.cpp`: CLI; `examples/pool.cfg`: illustrative defaults, not calibration.
 - `tests/test_simulator.cpp`: analytic paths, energy, bounds, orientation and errors.
+- Root `Sonar.code-workspace`, `.vscode/tasks.json` and `scripts/dev.ps1`: Windows
+  VS Code setup, build/test/run tasks and local tool discovery. Setup owns generated,
+  ignored editor settings/launch files; preserve unowned files. Do not commit local paths.
 - Pool frame is right-handed, z up. Local launch angles differ from pool-frame
   path coordinates. Preserve SI units and explicitly suffixed degree/gradian inputs.
 - Only reciprocal terminal-backscatter paths are represented. Preserve complete
@@ -29,12 +32,19 @@
 
 ## Checks and remaining work
 
-- Build/test/formatter commands and the Windows bundled-tool `PATH` setup are in
-  the README. Run checks affected by edits; keep generated builds and output untracked.
+- VS Code helper actions `Setup`, `Build`, `Test`, `Run`, `Scan` and `Debug`, plus
+  manual CMake/formatter commands, are in README. The helper uses `build-vscode`,
+  creates fresh Run/Scan outputs, and archives prior debug output without deletion.
+  Run checks affected by edits; keep generated builds and output untracked.
 - Recorded baseline: implementation commit
   `9c5c44c95c9501bacfbb26b6d166e85afc3627a7`, Windows 2026-11-24,
   GCC 13.1/CMake 3.30.5 Debug: warning-free build, 3/3 CTest and six-file formatter
   check passed. Independent full-scan CSV/path checks passed; see README for scope.
+- Environment baseline `9dc0c892128ecb0a7d8b2770f777038f70f34802`, same date:
+  Windows PowerShell 5.1 setup/ownership/build/test/run/scan/debug-output checks
+  passed, including 3/3 CTest and GDB command-line breakpoint/normal exit. VS Code
+  workspace views were observed; GUI task shortcuts/F5 were not tested end-to-end.
+  Simulator C++ and CMake remain unchanged from the numerical baseline.
 - Those results do not validate later source changes, another platform or pool acoustics.
 - Known gaps: real dimensions/material calibration, asymmetric and purely specular
   return-path models, frequency/phase effects and measured Ping360 comparison.

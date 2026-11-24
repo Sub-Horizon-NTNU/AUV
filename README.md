@@ -2,6 +2,7 @@
 
 The `sonar` branch contains the standalone C++17 Ping360 numerical simulator.
 
+- [VS Code workspace](Sonar.code-workspace) — open this file for the prepared build, run and debug tasks.
 - [Setup, configuration and model documentation](sonar%20simulering/README.md)
 - [CMake project](sonar%20simulering/CMakeLists.txt) — open `sonar simulering` in CLion.
 - [Project wiki](https://github.com/Sub-Horizon-NTNU/AUV/wiki/Sonar-simulering)
