@@ -2,7 +2,7 @@
 
 Step 1 is a standalone C++17 acoustic ray tracer for a stationary sonar in a rectangular pool. It produces inspectable echo paths, return times and relative range profiles. Step 2 adds an optional raylib viewer for exploring those calculations. The calculation library retains no graphics or third-party dependencies.
 
-The model covers **reciprocal backscatter paths**, not every possible multipath return. Pool dimensions, pose and acoustic coefficients in the example are illustrative; actual pool specifications and calibration are not yet available. AUV dynamics, IMU (inertial measurement unit), DVL (Doppler velocity log) and sensor fusion are outside the implemented scope.
+The example uses **geometrically received paths**: sampled specular returns and bounded diffuse receiver connections. The original reciprocal model remains the API default for compatibility. Neither mode enumerates every return. Pool dimensions, effective receiver aperture and acoustic coefficients are illustrative and uncalibrated. AUV dynamics, IMU (inertial measurement unit), DVL (Doppler velocity log) and sensor fusion are outside the implemented scope.
 
 ## Build and run
 
@@ -65,7 +65,7 @@ ctest --test-dir build --output-on-failure
 
 The same CMake commands work with CMake 3.20+, a C++17 compiler and Ninja on `PATH`; on Unix-like systems invoke `./build/sonar_sim`. Only the Windows toolchain listed below has been verified. `--scan` calculates all 400 motor angles at one fixed pose; it does not simulate scanning time or motion.
 
-Run `sonar_sim --help` for options. Without `--config`, API defaults use legacy surfaces and no particles. The supplied example now enables roughness (0.15 mm RMS at 750 kHz) and 1024 particle proxies with strength 0.005 and seed 42. Select a fresh output subdirectory for each run: existing `echoes.csv`, `paths.csv` or `profiles.csv` files cause an error rather than an overwrite. CSV writing is not atomic as a set; an I/O failure can leave partial files. Inspect those files and rerun with a fresh directory.
+Run `sonar_sim --help` for options. Without `--config`, API defaults use reciprocal returns, legacy surfaces and no particles. The supplied example enables receiver paths with an effective 0.05 m radius and one allowed diffuse-return wall reflection, roughness (0.15 mm RMS at 750 kHz) and 1024 particle proxies with strength 0.005 and seed 42. Select a fresh output subdirectory for each run: existing `echoes.csv`, `paths.csv` or `profiles.csv` files cause an error rather than an overwrite. CSV writing is not atomic as a set; an I/O failure can leave partial files. Inspect those files and rerun with a fresh directory.
 
 If Windows cannot load GCC runtime DLLs, use CLion's toolchain environment or the `PATH` setup above. Configuration and CLI errors exit with code 1; check the reported file, line or option before rerunning.
 
@@ -90,16 +90,20 @@ Compare the selected ping's paths with a cached 400-angle simulated sonar image:
 | Space or `Pause` / `Play`; `Replay`; progress slider | Pause, replay or scrub the selected sound path. |
 | Click the received profile | Select the nearest eligible modeled arrival by apparent range. This is range selection, not measured-echo identification. |
 | Click the sonar image; `All`, `Direct`, `Multipath`, `Particles` | Select angle/range and filter contributions. Local +x points up and +y left. Overlapping echoes are not uniquely identified. |
-| `Ray paths` / `Wavefront` | Switch between a selected echo's roundtrip and the coarse one-way geometric front. |
+| `Ray paths` / `Wavefront` | Switch between received routes and the separate one-way geometric front. |
+| `All returns` (default on) | Show accepted routes from the same ping simultaneously, with arrival markers/count on one receive clock. |
+| `Move sonar` | Enter pool-frame Top; drag TX/RX to preview a new XY position and release to recalculate the stationary scan. |
 | `Scattering >` | Edit legacy/roughness model, RMS roughness and particle enable/count/strength; apply the draft together. |
 | Draft `−` / `+`, then `Apply draft` | Change pool dimensions, sonar position, receive range or maximum outward contacts together. Invalid drafts retain the last valid simulation and show an error. |
-| `Reload config`; Escape | Reload the supplied config file, or illustrative defaults if none was supplied; close the window. |
+| `Reload config`; Escape | Reload the supplied file (or API defaults without one); Escape cancels movement/closes overlays before exiting the window. |
 
 Draft edits are not saved to the config file. Orientation and other settings remain configurable through the file. The inspector shows total path, displayed range (`path / 2`), physical return time in milliseconds and contact information.
 
 `Align sonar` applies the inverse full sonar pose so geometry matches the sonar image; selecting 3D or Side exits that alignment. 3D remains a free pool-frame camera with posed sonar axes, not an aligned 3D view. Axis colours are X red, Y green and Z blue. Sparse wavefront arrows show actual propagation direction: cyan before reflection, amber afterward, with only the wall-normal component reversed. Arrow length is a display glyph, not energy, pressure, a front normal or wake. `--align-sonar` selects the aligned startup view for QA.
 
-Cyan marks direct surface energy and the outward pulse; amber marks multipath/return paths and green marks particle contributions. Purple is the **apparent straight-line location**, not a real object, and may lie outside the view. Ray-path playback stretches the selected roundtrip to five seconds. Image and profile share one fixed reference: the maximum **combined** bin over all 400 angles. Gain and span change only display scaling (`10 log10(energy/reference) + gain`), not the physics; default span is 80 dB. These are not calibrated acoustic dB. The image is simulated, not measured sonar data. Configuration changes rebuild the scan/cloud; angle changes recompute only the selected ping, while channel/gain/span changes reuse scan data.
+Cyan and amber mark outward and return route segments; profile channels distinguish direct/multipath surface and green particle contributions. Purple is the **apparent straight-line location**, not a real object, and may lie outside the view. All-returns playback shares the `2*max_range_m/c` receive window, slowed to five seconds; selected-only mode uses that route's actual time and outward/total-length phase split. Image and profile share the maximum **combined** bin over all 400 angles. Each new pose/configuration gets its own scan peak, so brightness across positions is not an absolute energy comparison. Gain/span change only display scaling, not physics. The image is simulated, not measured sonar data; display filtering reuses scan data.
+
+Moving TX/RX previews a position and performs one fresh 400-angle stationary scan on release. XY is clamped inside the effective-aperture margin; height, orientation, channel and head angle remain unchanged, and the draft position is synchronized. Escape or opening overlays cancels the preview. Change height in Settings. This is a sequence of stationary poses, not vehicle motion or a localization-accuracy test.
 
 Wavefront mode now uses 32 × 192 rays (6144) in an ideal rectangular mirror geometry: fold `origin + direction*c*t` into the pool. Rays persist for the full one-way `max_range_m/c` window regardless of material energy or echo-contact budget; wall-crossing seam vertices keep neighboring patches connected without false chords across walls. Playback slows that window to five seconds. This is geometry, not pressure, FDTD, interference, diffuse branching or particle/bubble-scattered fronts; it carries no acoustic amplitude model and is separate from the predicted received echoes. The API permits up to 262144 rays.
 
@@ -130,7 +134,8 @@ Edit [examples/pool.cfg](examples/pool.cfg). The format is `key=value`, with `#`
 | `wall_reflection`, `floor_reflection`, `surface_reflection` | Reflected **energy** fractions in [0,1]; defaults 0.8, 0.7, 0.95. |
 | `backscatter_fraction`, `absorption_per_m` | Backscatter share in [0,1] and energy attenuation coefficient in 1/m; defaults 0.1 and 0.01. |
 | `horizontal_rays`, `vertical_rays` | Fan quadrature counts, each 1–101; product at most 1024. Defaults 3 × 11. |
-| `max_outward_hits`, `range_samples` | At most 1–16 outward contacts per ray; 200–1200 range bins. Defaults 4 and 600. |
+| `max_outward_hits`, `range_samples` | Contact budget 1–16 (outward in reciprocal mode, total in receiver_paths); 200–1200 range bins. Defaults 4 and 600. |
+| `return_model`, `receiver_radius_m`, `return_reflections` | `reciprocal` (API default) or `receiver_paths`; effective radius 0.0001–0.5 m, strictly within pool clearance in receiver-path mode; 0 or 1 diffuse-return wall reflection (default 1). |
 | `surface_model`, `frequency_hz`, `surface_roughness_m` | `legacy` or `roughness`; frequency 500000–1000000 Hz and RMS roughness 0–0.01 m. API defaults: legacy, 750000 Hz, 0.0002 m. |
 | `volume_scatterers`, `volume_strength`, `volume_seed` | 0–4096 points, strength 0–1 and unsigned seed. API defaults: 0 points, 0.001 strength, seed 42. |
 
@@ -140,9 +145,11 @@ The nominal fan is 2° horizontally × 25° vertically, sampled at cell midpoint
 
 ## Calculation
 
-Each ray intersects the nearest box plane. At each outward contact it contributes a backscatter echo that retraces the entire outward path. The continuing ray is reflected using `d_next = d - 2(d·n)n`, for unit plane normal `n`.
+Each launched ray intersects box planes and reflects using `d_next = d - 2(d·n)n`, for unit plane normal `n`. In `receiver_paths` mode a specular route is accepted only at its first eligible intersection with the effective receiver sphere after surface contact, within the receiver's 2° × 25° fan. It ends on that aperture, not necessarily at its centre. Diffuse next-event estimation connects a surface directly to the receiver centre or via at most one extra wall found with an image source. These routes are not forced reversals. Total length is limited to `2*max_range_m`; `max_outward_hits` bounds **total outbound plus return wall contacts** in this mode, despite its historical key name. Diffuse paths end at the centre; their time therefore differs from aperture-entry timing.
 
-For the kth outward contact at accumulated distance `s` metres:
+For every accepted route of actual total length `L`, time is `L/c` and displayed range is `L/2`. One-contact surface routes are direct; more contacts are multipath. Sampled rays can miss a finite receiver, only the first eligible coherent capture is kept, and diffuse chains beyond the stated return-wall order are absent. Receiver radius is an effective geometric sampling aperture, **not a measured Ping360 transducer dimension**. Coherent survival, Lambert-like diffuse angular/capture factors and particle strengths are uncalibrated heuristics, including relative scaling between channels. [Aalto geometrical acoustics](https://research.cs.aalto.fi/acoustics/virtual-acoustics/research/room-acoustics-modeling/69-geometrical-acoustics.html) and [COMSOL receiver spheres](https://doc.comsol.com/6.3/doc/com.comsol.help.aco/aco_ug_geometrical_aco.11.13.html) explain the geometry; neither calibrates this underwater implementation.
+
+Only in compatibility `reciprocal` mode is a return generated by reversing each outward route. For its kth contact at accumulated distance `s` metres:
 
 ```text
 total_path_m = 2s
@@ -151,9 +158,9 @@ apparent_range_m = s
 interaction_count = 2k - 1
 ```
 
-The first contact is labelled direct; later contacts are labelled multipath. These are simulator ground-truth labels, not a classifier for measured sonar data. Complete paths contain the transmitter, outward contacts, reversed earlier contacts and receiver at the transmitter position.
+Those reciprocal paths contain the transmitter, outward contacts, reversed earlier contacts and receiver centre. All route labels are simulator truth, not a measured-data classifier.
 
-For `surface_model=legacy`, the uncalibrated relative surface echo energy is:
+For compatibility `return_model=reciprocal` with `surface_model=legacy`, relative surface echo energy is:
 
 ```text
 I = w P² (R B) μ² [1 m / max(1 m, s)]⁴ exp(-α · 2s)
@@ -161,7 +168,7 @@ I = w P² (R B) μ² [1 m / max(1 m, s)]⁴ exp(-α · 2s)
 
 Here `w` is normalized ray weight, `R` the terminal surface energy reflection coefficient, `B` the backscatter fraction, `μ` the absolute incidence cosine and `α`=`absorption_per_m`. `P` is the product of prior specular energy fractions `R(1-B)`; squaring accounts for encountering those surfaces outward and on return. `RB` supplies terminal backscatter while `R(1-B)` continues specularly. The 1 m spreading clamp avoids a near-range singularity and is an arbitrary model reference, not a calibration.
 
-For `roughness`, wavelength `λ=c/f` is about 1.97 mm at 1480 m/s and 750 kHz. With RMS roughness `σ`, coherent energy share `S=exp(-(4πσμ/λ)²)` and illustrative receiver lobe `L=exp(-0.5[acos(2μ²−1)/1°]²)`, terminal return share is `q=SL+(1−S)Bμ²`; continuation is `S(1−L)`. Multiply each by material energy coefficient `R`. Return plus continuation is bounded by one; unreceived diffuse energy is discarded. In the energy equation replace `Bμ²` by `q` and use the new prior continuation product. Its square remains an effective reciprocal-path heuristic, not exact transport.
+For roughness, wavelength `λ=c/f` is about 1.97 mm at 1480 m/s and 750 kHz, and coherent share is `S=exp(-(4πσμ/λ)²)`. Receiver-path mode continues coherent energy by material fraction `R*S` and tests reception geometrically; diffuse connections use `R*(1-S)*B` with angular/aperture factors. Compatibility reciprocal mode instead uses the illustrative lobe `L=exp(-0.5[acos(2μ²−1)/1°]²)`, return share `q=SL+(1−S)Bμ²`, and continuation `S(1−L)`. Its squared prior-continuation weight remains a heuristic.
 
 The coherent factor follows the energy square of the amplitude factor in [Delft §4.2.3](https://ocw.tudelft.nl/wp-content/uploads/Reader_chapter_4_01.pdf). That source's small-Rayleigh-parameter approximation is not valid across all allowed settings; extension to large roughness/angles and the receiver lobe are explicit heuristics. [Hansen's 2021 UiO introduction, pp. 3–4](https://www.uio.no/studier/emner/matnat/ifi/IN3015/h24/curriculum/sonar_introduction_2021_compressed.pdf) motivates the distinction between smooth specular surfaces, rough diffuse surfaces and volume scattering.
 
@@ -184,6 +191,8 @@ Each run writes these CSV files:
 IDs restart within each run; `echo_id` is local to a ping. The surface bits are x-min=1, x-max=2, y-min=4, y-max=8, floor=16, water surface=32; zero denotes the sonar. Values are floating-point relative energies, not calibrated pressure or Ping360 hardware byte strengths. Preserve the configuration and invocation alongside exported results when comparing runs.
 
 CSV additions retain earlier columns: `echo_kind` (`surface`/`volume`) and volume-only `scatterer_id`, path `vertex_kind` (`sonar`/`surface`/`volume`), and `volume_intensity`. A volume echo has `ray_id=UINT_MAX` and `is_multipath=false`; it is **not** a direct surface echo. Zero surface mask can now also denote a particle, distinguished by its vertex kind. `total_intensity` sums all three channels.
+
+Receiver-route exports append `return_kind`, `return_start_vertex`, `outbound_path_m`, `return_path_m`, `arrival_azimuth_deg` and `arrival_elevation_deg`. The arrival angles describe the receiver-to-last-leg direction in the local sonar frame. Split lengths sum to total length; use the stored full polyline rather than assuming a reversed return.
 
 Use `sonar::simulate_ping(Config, angle_grad)` from [simulator.hpp](include/sonar/simulator.hpp) to obtain `Ping`, `Echo`, `PathVertex` and `RangeBin` values directly. It performs no file or graphics I/O and throws `std::invalid_argument` for invalid input. `sonar_core` is the numerical target; `sonar_io` owns configuration/CSV and `sonar_sim` owns CLI interaction.
 
@@ -208,7 +217,9 @@ Native layout/camera/scan and analytic-front revision `a658584c17e1a642dc8e0b24b
 
 Alignment/direction revision `238c3c27482d5283f0014f45f5387a9c57f80a01` passed 5/5 CTest and independent review/format checks. Tests cover full-pose alignment, unchanged scan caching and reflected directions at walls/corners; alignment and 3D direction screenshots were inspected. Core/config/CSV are unchanged. GUI click automation was not performed.
 
-These are numerical/software checks, not pool or hardware validation. Asymmetric multipath, enumeration of purely specular closed paths, interference, diffraction, side lobes, resolved rough geometry and electronics are absent. Frequency affects only the roughness heuristic; no wave field or hardware protocol is solved. Real-data classification, scan motion and calibration remain unverified.
+Receiver-route/movement revision `6b26359` built without warnings on Windows GCC 13.1/CMake 3.30.5 Debug and passed 5/5 CTest (including 12 numerical groups), ten-file formatting and independent review. Independent 400-angle export checks covered 30,487 echoes (29,512 diffuse, 20 specular, 955 volume), actual polyline lengths, time/range gates, wall budgets and receiver endpoints. Movement controls at 1000×700/1920×1080 and 3D/details screenshots were inspected; live mouse movement was not tested. This revision changes core return geometry; earlier evidence applies to its stated historical commits.
+
+These are numerical/software checks, not pool or hardware validation. The bounded receiver connections do not enumerate every asymmetric or specular route; interference, diffraction, side lobes, resolved rough geometry and electronics remain absent. Frequency affects only the roughness heuristic; no wave field or hardware protocol is solved. Real-data classification, scan motion and calibration remain unverified.
 
 Step 2 provides the educational viewer and a small draft configuration panel. Synthetic IMU/DVL data, sensor fusion and further simulation work remain later steps; advancement is controlled by the user.
 

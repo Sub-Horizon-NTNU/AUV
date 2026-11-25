@@ -29,8 +29,8 @@
   ignored editor settings/launch files; preserve unowned files. Do not commit local paths.
 - Pool frame is right-handed, z up. Local launch angles differ from pool-frame
   path coordinates. Preserve SI units and explicitly suffixed degree/gradian inputs.
-- Surface paths are reciprocal; optional volume paths are single straight returns. Preserve complete
-  closed polylines and the distinction between apparent range and roundtrip length.
+- API default is reciprocal; example uses geometrically gated receiver paths. Preserve complete
+  TX-to-RX polylines, including aperture endpoints, and the distinction between apparent range and roundtrip length.
 - Echo labels are simulation truth, not measured-data classification. Energy is relative.
 - CSV writes preserve existing output files but are not atomic across the three files.
 
@@ -75,3 +75,11 @@
 - Alignment/direction baseline `238c3c27482d5283f0014f45f5387a9c57f80a01`: 5/5 tests,
   independent review/format and screenshot checks. Alignment is full-pose sonar-local
   Top only; 3D remains pool-frame. Front arrows use folded propagation derivatives.
+- Current baseline `6b26359`: received specular/diffuse paths, all-return clock and
+  stationary XY movement; 5/5 CTest, 12 numerical groups, ten-file format and independent
+  export checks passed. No live mouse testing. See README for scoped limits.
+- In receiver_paths, the historical max_outward_hits key bounds total wall contacts;
+  use actual path length/time and stored outbound/return split, not route reversal.
+  Effective receiver radius is uncalibrated. Preserve API reciprocal compatibility.
+- Move release rebuilds one stationary scan and synchronizes draft pose. Wavefront
+  remains an independent ideal one-way diagnostic, not the received-echo transport.
