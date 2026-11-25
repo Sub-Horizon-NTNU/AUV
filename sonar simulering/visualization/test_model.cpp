@@ -341,6 +341,16 @@ int main() {
                                                        "without synthesizing or rescaling it");
             }
         }
+        const auto scan_before_filter = model.scan_revision;
+        const auto *bins_before_filter = model.scan[0].data();
+        model.set_filter_strength(viewer::FilterStrength::Relaxed);
+        check(model.filter_strength == viewer::FilterStrength::Relaxed &&
+                  model.estimate_revision == inference_revision + 1 &&
+                  model.scan_revision == scan_before_filter &&
+                  model.scan[0].data() == bins_before_filter &&
+                  model.scan_reference == raw_reference && model.gain_db == 7 &&
+                  model.dynamic_range_db == 90,
+              "changing filter strength refits the cached profiles without changing raw display");
         model.set_channel(viewer::Channel::Direct);
         check(!model.estimated_pool && model.gain_db == 7 && model.dynamic_range_db == 90,
               "selecting a truth-debug channel exits Estimated mode and preserves gain/span");
@@ -348,13 +358,15 @@ int main() {
         const auto before_move_angle = model.ping.angle_grad;
         const auto before_move_channel = model.channel;
         const auto before_move_revision = model.scan_revision;
+        const auto before_move_estimate = model.estimate_revision;
         check(model.move_stationary({3, 2, 999}), "valid top-view move must apply");
         near(model.config.pose.position_m, {3, 2, before_move_pose.position_m.z},
              "top-view move preserves depth");
         near(model.draft.pose.position_m, model.config.pose.position_m,
              "move synchronizes configuration draft");
         check(model.scan_revision == before_move_revision + 1 &&
-                  model.estimate_revision == model.scan_revision &&
+                  model.estimate_revision == before_move_estimate + 1 &&
+                  model.filter_strength == viewer::FilterStrength::Relaxed &&
                   model.ping.angle_grad == before_move_angle &&
                   model.channel == before_move_channel &&
                   model.config.pose.roll_deg == before_move_pose.roll_deg &&
@@ -370,6 +382,22 @@ int main() {
              "invalid move preserves the committed position");
         check(model.scan_revision == moved_revision && model.scan[0].data() == moved_scan,
               "invalid move preserves the previous scan cache");
+        model.set_route_playing(true);
+        model.tick(0.49);
+        check(model.scan_revision == moved_revision, "route waits for the next scan snapshot");
+        model.tick(0.02);
+        check(model.scan_revision == moved_revision + 1 &&
+                  model.config.pose.position_m.z == moved_pose.z &&
+                  model.filter_strength == viewer::FilterStrength::Relaxed,
+              "route updates the scan and preserves depth and filter strength");
+        const auto first_waypoint = model.config.pose.position_m;
+        model.tick(0.5);
+        check(model.scan_revision == moved_revision + 2 &&
+                  sonar::length(model.config.pose.position_m - first_waypoint) > 0,
+              "successive route scans use different positions");
+        model.set_route_playing(false);
+        model.tick(1);
+        check(model.scan_revision == moved_revision + 2, "paused route keeps the last scan");
         config = model.config;
         config.settings.max_range_m = 0.75;
         check(model.apply(config, 0) && model.echo() == nullptr,

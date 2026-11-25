@@ -1,4 +1,5 @@
 #include "view.hpp"
+#include "pool_coordinates.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -329,6 +330,13 @@ void draw_world2d(Model &model, Font font, Rectangle world_area) {
         return Vector2{left + (value2d.x - static_cast<float>(xmin)) * scale,
                        bottom - (value2d.y - static_cast<float>(ymin)) * scale};
     };
+    if (model.route_playing && !side) {
+        for (unsigned index = 0; index < Model::route_steps; index += 2) {
+            DrawLineEx(project(model.route_waypoint(index)),
+                       project(model.route_waypoint((index + 1) % Model::route_steps)), 1.5F,
+                       Color{115, 174, 162, 160});
+        }
+    }
     for (unsigned index = 0; index < 8; ++index) {
         for (unsigned axis = 0; axis < 3; ++axis) {
             const unsigned neighbor = index ^ (1U << axis);
@@ -654,20 +662,81 @@ void configuration(Model &model, Vector2 mouse, Font font) {
     }
 }
 
+void draw_pool_coordinates(const Model &model, Vector2 tx, float radius, Font font) {
+    const auto coordinates = pool_coordinates(model.estimate);
+    const auto &pool = model.config.pool;
+    const auto truth_center =
+        model.pool_to_sonar({pool.length_m / 2, pool.width_m / 2, model.config.pose.position_m.z});
+    const auto project_center = [&](double x, double y) {
+        const auto pixels_per_m = radius / static_cast<float>(model.config.settings.max_range_m);
+        return Vector2{tx.x - static_cast<float>(y) * pixels_per_m,
+                       tx.y - static_cast<float>(x) * pixels_per_m};
+    };
+    const auto draw_center = [&](Vector2 center, Color color, float size) {
+        if (CheckCollisionPointCircle(center, tx, radius - size)) {
+            DrawLineEx({center.x - size, center.y}, {center.x + size, center.y}, 2, color);
+            DrawLineEx({center.x, center.y - size}, {center.x, center.y + size}, 2, color);
+        }
+    };
+    draw_center(project_center(truth_center.x, truth_center.y), amber, 7);
+    if (coordinates.center_xy_m) {
+        draw_center(project_center((*coordinates.center_xy_m)[0], (*coordinates.center_xy_m)[1]),
+                    WHITE, 4);
+    }
+    DrawCircleLinesV(tx, 5, cyan);
+
+    const auto component = [&](std::size_t index, bool estimated) -> std::string {
+        if (!coordinates.axes[index]) {
+            return "?";
+        }
+        const auto &axis = *coordinates.axes[index];
+        return number(estimated ? axis.sonar_from_center_m
+                                : -axis.axis[0] * truth_center.x - axis.axis[1] * truth_center.y,
+                      2);
+    };
+    DrawRectangleRec({568, 415, 310, 54}, Color{12, 18, 26, 230});
+    label(font, "TX from pool center (m)", 575, 417, 16, cyan);
+    if (coordinates.axes[0] || coordinates.axes[1]) {
+        label(font, "Estimated  X " + component(0, true) + "   Y " + component(1, true), 575, 435,
+              16, WHITE);
+        label(font, "Simulated  X " + component(0, false) + "   Y " + component(1, false), 575, 452,
+              16, amber);
+    } else {
+        label(font, "Need opposing wall candidates", 575, 435, 16, WHITE);
+        label(font, "Orange cross: simulated center", 575, 452, 16, amber);
+    }
+}
+
 void sonar_panel(Model &model, Texture2D texture, Vector2 mouse, Font font) {
     DrawRectangleRec({494, 112, 460, 410}, panel);
-    if (button(font, "Raw returns", {504, 88, 214, 28}, mouse, !model.estimated_pool)) {
+    if (button(font, "Raw returns", {504, 88, 139, 28}, mouse, !model.estimated_pool)) {
         model.set_estimated_pool(false);
     }
-    if (button(font, "Estimated pool", {726, 88, 214, 28}, mouse, model.estimated_pool)) {
+    if (button(font, "Estimated pool", {651, 88, 162, 28}, mouse, model.estimated_pool)) {
         model.set_estimated_pool(true);
     }
-    const char *names[]{"All", "Direct", "Multipath", "Particles"};
-    for (unsigned index = 0; index < 4; ++index) {
-        const auto channel = static_cast<Channel>(index);
-        if (button(font, names[index], {504 + static_cast<float>(index) * 110, 122, 104, 28}, mouse,
-                   model.channel == channel)) {
-            model.set_channel(channel);
+    if (button(font, "Coords", {821, 88, 119, 28}, mouse, model.show_pool_coordinates)) {
+        model.show_pool_coordinates = !model.show_pool_coordinates;
+    }
+    if (model.estimated_pool) {
+        constexpr std::array strengths{FilterStrength::Relaxed, FilterStrength::Balanced,
+                                       FilterStrength::Strict};
+        const char *names[]{"Relaxed", "Balanced", "Strict"};
+        label(font, "Filter", 504, 126, 16, muted);
+        for (std::size_t index = 0; index < strengths.size(); ++index) {
+            if (button(font, names[index], {564 + static_cast<float>(index) * 126, 122, 118, 28},
+                       mouse, model.filter_strength == strengths[index])) {
+                model.set_filter_strength(strengths[index]);
+            }
+        }
+    } else {
+        const char *names[]{"All", "Direct", "Multipath", "Particles"};
+        for (unsigned index = 0; index < 4; ++index) {
+            const auto channel = static_cast<Channel>(index);
+            if (button(font, names[index], {504 + static_cast<float>(index) * 110, 122, 104, 28},
+                       mouse, model.channel == channel)) {
+                model.set_channel(channel);
+            }
         }
     }
     DrawTexturePro(texture,
@@ -710,8 +779,8 @@ void sonar_panel(Model &model, Texture2D texture, Vector2 mouse, Font font) {
         label(font,
               insufficient
                   ? "Insufficient evidence: raw shown"
-                  : std::to_string(model.estimate.walls.size()) +
-                        " walls; support >= " + std::to_string(support) + "; RMS " +
+                  : std::to_string(model.estimate.walls.size()) + " wall candidates | " +
+                        std::to_string(support) + "+ angles | RMS " +
                         number(residual / static_cast<double>(model.estimate.walls.size()), 3) +
                         " m",
               504, 153, 16, insufficient ? amber : cyan);
@@ -723,7 +792,10 @@ void sonar_panel(Model &model, Texture2D texture, Vector2 mouse, Font font) {
                     static_cast<float>(position[0] / model.config.settings.max_range_m) * radius};
         };
         for (const auto &wall : model.estimate.walls) {
-            DrawLineEx(project_wall(wall.first_xy_m), project_wall(wall.last_xy_m), 2, WHITE);
+            for (const auto &segment : wall.segments) {
+                DrawLineEx(project_wall(segment.first_xy_m), project_wall(segment.last_xy_m), 2,
+                           WHITE);
+            }
         }
         // Support/residual are geometric heuristics, not calibrated confidence probabilities.
 
@@ -739,6 +811,9 @@ void sonar_panel(Model &model, Texture2D texture, Vector2 mouse, Font font) {
     arrow2d(axes_origin, axes_y, GREEN);
     label(font, "+X", axes_x.x + 5, axes_x.y - 12, 16, RED);
     label(font, "+Y", axes_y.x - 23, axes_y.y - 16, 16, GREEN);
+    if (model.show_pool_coordinates) {
+        draw_pool_coordinates(model, center, radius, font);
+    }
     label(font, "Local frame; outer ring " + number(model.config.settings.max_range_m, 1) + " m",
           566, 475, 16, muted);
     if (CheckCollisionPointRec(mouse, sonar_image_area) &&
@@ -771,6 +846,7 @@ void render_sonar(const Model &model, SonarTexture &image, int requested_size) {
     const int size = std::clamp(requested_size, 384, 2048);
     if (image.texture.id && image.texture.width == size && image.revision == model.scan_revision &&
         image.channel == model.channel && image.estimated_pool == model.estimated_pool &&
+        (!model.estimated_pool || image.estimate_revision == model.estimate_revision) &&
         image.gain_db == model.gain_db && image.dynamic_range_db == model.dynamic_range_db) {
         return;
     }
@@ -811,6 +887,7 @@ void render_sonar(const Model &model, SonarTexture &image, int requested_size) {
     UnloadImage(pixels);
     SetTextureFilter(image.texture, TEXTURE_FILTER_BILINEAR);
     image.revision = model.scan_revision;
+    image.estimate_revision = model.estimate_revision;
     image.channel = model.channel;
     image.estimated_pool = model.estimated_pool;
     image.gain_db = model.gain_db;
@@ -941,6 +1018,7 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
         model.move_sonar_mode = !model.move_sonar_mode;
         model.position_dragging = false;
         if (model.move_sonar_mode) {
+            model.set_route_playing(false);
             model.projection = Projection::Top;
             model.sonar_aligned = false;
             model.set_scan_playing(false);
@@ -1003,6 +1081,7 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
                                    : "Cyan: outward / Amber: return / Purple: apparent echo",
             ray.x + 10 * s, ray.y + ray.height - 44 * s, 14, muted);
     text_at(model.move_sonar_mode ? "Drag TX / RX; release updates all 400 angles"
+            : model.route_playing ? "Route demo: stationary scan snapshots along path"
             : model.sonar_aligned ? "SONAR frame: +X up / +Y left, matching image"
                                   : "Drag in 3D to orbit; Align sonar matches image",
             ray.x + 10 * s, ray.y + ray.height - 22 * s, 13, muted);
@@ -1053,13 +1132,19 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
     if (button(font, "+", {t.x + 196 * s, y, 28 * s, h}, content_mouse)) {
         model.scan_speed_grad_s = std::min(80.0, model.scan_speed_grad_s + 10);
     }
+    if (button(font, model.route_playing ? "Pause route" : "Play route",
+               {t.x + t.width - 270 * s, y, 130 * s, h}, content_mouse, model.route_playing)) {
+        model.set_route_playing(!model.route_playing);
+    }
     if (button(font, "Playback...", {t.x + t.width - 130 * s, y, 130 * s, h}, content_mouse,
                model.playback_open)) {
         model.playback_open = !model.playback_open;
         model.settings_open = false;
         model.details_open = false;
     }
-    text_at(number(400 / model.scan_speed_grad_s, 1) + " s/revolution (illustration, static pose)",
+    text_at(number(400 / model.scan_speed_grad_s, 1) +
+                (model.route_playing ? " s/revolution (scan snapshots)"
+                                     : " s/revolution (illustration, static pose)"),
             t.x + 238 * s, y + 5 * s, 15, muted);
     y += 32 * s;
     if (button(font, model.playing ? "Pause pulse" : "Play pulse", {t.x, y, 110 * s, h},
@@ -1268,9 +1353,9 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
                   "roundtrip and is shown at 4 m. A reflected 12 m roundtrip is shown at 6 m along "
                   "the head bearing, even if no wall is there.");
         paragraph("Raw / Estimated and range rings",
-                  "Rings are range rulers. Estimated uses combined intensities and a level-scan "
-                  "rectangular-pool prior. White supported wall segments and retained measured "
-                  "bins are hypotheses, not measured position accuracy.");
+                  "Estimated fits wall candidates to the combined scan. Relaxed accepts less "
+                  "support; Strict requires more. Compare candidates with Raw returns at the "
+                  "same gain and span. White segments can include coherent ghosts.");
         paragraph("One narrow fan rotates through 360 degrees",
                   "Ping360 has a nominal 2 degree horizontal by 25 degree vertical beam. One ping "
                   "illuminates that fan, not the entire circle. Play 360 scan uses an illustration "

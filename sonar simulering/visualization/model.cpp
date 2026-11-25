@@ -10,6 +10,17 @@
 #include <utility>
 
 namespace viewer {
+namespace {
+
+PoolEstimate fit_pool(const ScanProfiles &profiles, const sonar::Settings &settings,
+                      FilterStrength strength) {
+    InferenceOptions options{settings.sound_speed_m_s * settings.transmit_duration_us * 1e-6 / 2,
+                             sonar::minimum_range_m};
+    options.set_strength(strength);
+    return infer_pool(profiles, options);
+}
+
+} // namespace
 
 void Model::orbit_camera(float yaw_delta_deg, float pitch_delta_deg) {
     orbit_deg = std::fmod(orbit_deg + yaw_delta_deg, 360.0F);
@@ -50,10 +61,7 @@ bool Model::apply(const sonar::Config &candidate, unsigned angle) {
                                                     bin.volume_intensity);
             }
         }
-        const InferenceOptions inference_options{
-            candidate.settings.sound_speed_m_s * candidate.settings.transmit_duration_us * 1e-6 / 2,
-            sonar::minimum_range_m};
-        auto fitted = infer_pool(profiles, inference_options);
+        auto fitted = fit_pool(profiles, candidate.settings, filter_strength);
         auto cloud = sonar::volume_points(candidate);
         auto front = make_wavefront(candidate, angle);
         config = candidate;
@@ -65,7 +73,7 @@ bool Model::apply(const sonar::Config &candidate, unsigned angle) {
         wavefront = std::move(front);
         ++scan_revision;
         estimate = std::move(fitted);
-        estimate_revision = scan_revision;
+        ++estimate_revision;
         selected = 0;
         const unsigned center_ray =
             (config.settings.horizontal_rays / 2) * config.settings.vertical_rays +
@@ -98,6 +106,7 @@ bool Model::apply(const sonar::Config &candidate, unsigned angle) {
 }
 
 bool Model::move_stationary(sonar::Vec3 position) {
+    set_route_playing(false);
     position.z = config.pose.position_m.z;
     const double clearance = config.settings.receiver_radius_m;
     if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z) ||
@@ -210,6 +219,73 @@ void Model::set_estimated_pool(bool enabled) {
         status = "Estimated pool: level-scan rectangular prior; support/residual are heuristics, "
                  "not probabilities.";
     }
+}
+
+void Model::set_filter_strength(FilterStrength strength) {
+    if (strength != filter_strength) {
+        estimate = fit_pool(scan, config.settings, strength);
+        filter_strength = strength;
+        ++estimate_revision;
+    }
+}
+
+sonar::Vec3 Model::route_waypoint(unsigned index) const {
+    constexpr double full_turn = 6.28318530717958647692;
+    const double phase = (index % route_steps) * full_turn / route_steps;
+    const double margin = config.settings.return_model == sonar::ReturnModel::ReceiverPaths
+                              ? config.settings.receiver_radius_m
+                              : 0;
+    const double half_x = config.pool.length_m / 2;
+    const double half_y = config.pool.width_m / 2;
+    return {half_x + 0.65 * (half_x - margin) * std::cos(phase),
+            half_y + 0.65 * (half_y - margin) * std::sin(phase), config.pose.position_m.z};
+}
+
+void Model::set_route_playing(bool enabled) {
+    if (enabled && !route_playing) {
+        double nearest = std::numeric_limits<double>::infinity();
+        for (unsigned index = 0; index < route_steps; ++index) {
+            const auto delta = route_waypoint(index) - config.pose.position_m;
+            const double distance = sonar::dot(delta, delta);
+            if (distance < nearest) {
+                route_index = index;
+                nearest = distance;
+            }
+        }
+        route_elapsed_s = 0;
+        position_dragging = false;
+        move_sonar_mode = false;
+    }
+    route_playing = enabled;
+}
+
+void Model::advance_route(double seconds) {
+    if (!route_playing) {
+        return;
+    }
+    constexpr double step_s = 0.5;
+    const double elapsed = route_elapsed_s + std::min(seconds, route_steps * step_s);
+    const auto steps = static_cast<unsigned>(elapsed / step_s);
+    route_elapsed_s = std::fmod(elapsed, step_s);
+    if (steps == 0) {
+        return;
+    }
+    auto next = config;
+    // A scan describes one pose. Use the most recent waypoint after a frame stall.
+    next.pose.position_m = route_waypoint(route_index + steps - 1);
+    const auto saved_draft = draft;
+    const double saved_progress = progress;
+    const bool saved_playing = playing;
+    if (!apply(next, ping.angle_grad)) {
+        set_route_playing(false);
+        return;
+    }
+    draft = saved_draft;
+    draft.pose.position_m = next.pose.position_m;
+    progress = saved_progress;
+    playing = saved_playing;
+    route_index = (route_index + steps) % route_steps;
+    status = "Route demo: each scan is calculated at one waypoint.";
 }
 
 double Model::image_energy(unsigned heading, std::size_t bin) const {
@@ -497,6 +573,7 @@ void Model::tick(double seconds) {
             }
         }
     }
+    advance_route(seconds);
 }
 
 const sonar::Echo *Model::echo() const {

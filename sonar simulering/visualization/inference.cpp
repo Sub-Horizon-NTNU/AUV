@@ -47,16 +47,25 @@ unsigned longest_run(const Support &support) {
     return longest;
 }
 
-unsigned longest_run_start(const Support &support) {
-    unsigned current = 0, longest = 0, start = 0;
-    for (unsigned index = 0; index < 800; ++index) {
-        current = support[index % 400] ? std::min(400U, current + 1) : 0;
-        if (current > longest) {
-            longest = current;
-            start = (index + 401 - current) % 400;
+Support bridge_gaps(const Support &support, unsigned maximum_gap) {
+    Support result = support;
+    for (unsigned angle = 0; angle < 400; ++angle) {
+        if (!support[angle]) {
+            continue;
+        }
+        for (unsigned gap = 1; gap <= maximum_gap; ++gap) {
+            if (support[(angle + gap) % 400]) {
+                break;
+            }
+            if (support[(angle + gap + 1) % 400]) {
+                for (unsigned step = 1; step <= gap; ++step) {
+                    result.set((angle + step) % 400);
+                }
+                break;
+            }
         }
     }
-    return start;
+    return result;
 }
 
 double median(std::vector<double> values) {
@@ -72,7 +81,12 @@ void validate_options(const InferenceOptions &options) {
         options.relative_peak_floor <= 0 || options.relative_peak_floor > 0.1 ||
         options.minimum_support_angles < 8 || options.minimum_support_angles > 400 ||
         options.minimum_consecutive_angles < 3 ||
-        options.minimum_consecutive_angles > options.minimum_support_angles) {
+        options.minimum_consecutive_angles > options.minimum_support_angles ||
+        options.maximum_gap_angles > 8 || !std::isfinite(options.relative_support_fraction) ||
+        options.relative_support_fraction < 0.1 || options.relative_support_fraction > 1 ||
+        !std::isfinite(options.global_support_fraction) || options.global_support_fraction < 0 ||
+        options.global_support_fraction > 1 || !std::isfinite(options.retention_width_scale) ||
+        options.retention_width_scale < 0.25 || options.retention_width_scale > 4) {
         throw std::invalid_argument("invalid rectangular-pool inference options");
     }
 }
@@ -141,7 +155,8 @@ std::vector<Point> peak_points(const ScanProfiles &profiles, const InferenceOpti
             const double width = static_cast<double>(index - first) * bin_width;
             // Reject broad noise floors. Causal transmitted pulses become one leading-edge
             // observation, rather than shifting a long plateau's center onto a false wall.
-            if (width > std::max(4 * bin_width, 2 * options.pulse_width_m + 2 * bin_width)) {
+            if (width >
+                std::max({4 * bin_width, 2 * options.pulse_width_m + 2 * bin_width, range * 0.1})) {
                 continue;
             }
             const double r =
@@ -189,7 +204,8 @@ Orientation evaluate_orientation(const std::vector<Point> &points, double angle_
             if (count < options.minimum_support_angles) {
                 continue;
             }
-            const auto run = longest_run(histograms[axis][index]);
+            const auto run =
+                longest_run(bridge_gaps(histograms[axis][index], options.maximum_gap_angles));
             if (run < options.minimum_consecutive_angles) {
                 continue;
             }
@@ -197,16 +213,23 @@ Orientation evaluate_orientation(const std::vector<Point> &points, double angle_
             supported[side].push_back({std::abs(rho), count, run, true});
         }
     }
+    double global_best = 0;
+    for (const auto &side : supported) {
+        for (const auto &candidate : side) {
+            global_best = std::max(global_best, candidate.count + 2.0 * candidate.run);
+        }
+    }
     for (unsigned side = 0; side < 4; ++side) {
-        unsigned strongest_count = 0, strongest_run = 0;
+        double strongest = 0;
         for (const auto &candidate : supported[side]) {
-            strongest_count = std::max(strongest_count, candidate.count);
-            strongest_run = std::max(strongest_run, candidate.run);
+            strongest = std::max(strongest, candidate.count + 2.0 * candidate.run);
         }
         for (const auto &candidate : supported[side]) {
             // A short accidental inner line cannot displace a much more persistent
             // plane. Among substantial alternatives, proximity wins over brightness.
-            if (candidate.count * 2 < strongest_count || candidate.run * 2 < strongest_run) {
+            const double evidence = candidate.count + 2.0 * candidate.run;
+            if (evidence < strongest * options.relative_support_fraction ||
+                evidence < global_best * options.global_support_fraction) {
                 continue;
             }
             if (!result.planes[side].supported || candidate.offset < result.planes[side].offset) {
@@ -223,7 +246,7 @@ Orientation evaluate_orientation(const std::vector<Point> &points, double angle_
 }
 
 EstimatedWall refine_wall(const std::vector<Point> &points, double nx, double ny, double candidate,
-                          double tolerance) {
+                          double tolerance, const InferenceOptions &options) {
     EstimatedWall result;
     result.normal_x = nx;
     result.normal_y = ny;
@@ -265,30 +288,81 @@ EstimatedWall refine_wall(const std::vector<Point> &points, double nx, double ny
         squared += residual * residual;
     }
     result.support_angles = static_cast<unsigned>(support.count());
-    result.longest_run_angles = longest_run(support);
+    const auto connected = bridge_gaps(support, options.maximum_gap_angles);
+    result.longest_run_angles = longest_run(connected);
     if (result.support_angles) {
         result.rms_residual_m = std::sqrt(squared / result.support_angles);
-        // A partial line must not bridge gaps between unrelated/isolated matching
-        // points. Only its longest contiguous heading run defines drawable extent.
-        double minimum = std::numeric_limits<double>::infinity(), maximum = -minimum;
-        const unsigned start = longest_run_start(support);
-        for (unsigned step = 0; step < result.longest_run_angles; ++step) {
-            const auto *point = selected[(start + step) % 400];
-            if (point) {
-                const double tangent = -ny * point->x + nx * point->y;
-                minimum = std::min(minimum, tangent);
-                maximum = std::max(maximum, tangent);
+        for (unsigned start = 0; start < 400; ++start) {
+            if (!connected[start] || (!connected.all() && connected[(start + 399) % 400])) {
+                continue;
+            }
+            double minimum = std::numeric_limits<double>::infinity(), maximum = -minimum;
+            unsigned count = 0;
+            for (unsigned step = 0; step < 400 && connected[(start + step) % 400]; ++step) {
+                const auto *point = selected[(start + step) % 400];
+                if (point) {
+                    const double tangent = -ny * point->x + nx * point->y;
+                    minimum = std::min(minimum, tangent);
+                    maximum = std::max(maximum, tangent);
+                    ++count;
+                }
+            }
+            if (count >= options.minimum_consecutive_angles) {
+                result.segments.push_back(
+                    {{nx * result.offset_m - ny * minimum, ny * result.offset_m + nx * minimum},
+                     {nx * result.offset_m - ny * maximum, ny * result.offset_m + nx * maximum},
+                     count});
+            }
+            if (connected.all()) {
+                break;
             }
         }
-        result.first_xy_m = {nx * result.offset_m - ny * minimum,
-                             ny * result.offset_m + nx * minimum};
-        result.last_xy_m = {nx * result.offset_m - ny * maximum,
-                            ny * result.offset_m + nx * maximum};
+        if (!result.segments.empty()) {
+            const auto longest = std::max_element(
+                result.segments.begin(), result.segments.end(),
+                [](const auto &a, const auto &b) { return a.support_angles < b.support_angles; });
+            result.first_xy_m = longest->first_xy_m;
+            result.last_xy_m = longest->last_xy_m;
+        }
     }
     return result;
 }
 
 } // namespace
+
+void InferenceOptions::set_strength(FilterStrength strength) {
+    switch (strength) {
+    case FilterStrength::Relaxed:
+        relative_peak_floor = 1e-7;
+        minimum_support_angles = 14;
+        minimum_consecutive_angles = 5;
+        maximum_gap_angles = 4;
+        relative_support_fraction = 0.6;
+        global_support_fraction = 0.15;
+        retention_width_scale = 1.8;
+        break;
+    case FilterStrength::Balanced:
+        relative_peak_floor = 1e-6;
+        minimum_support_angles = 18;
+        minimum_consecutive_angles = 7;
+        maximum_gap_angles = 2;
+        relative_support_fraction = 0.75;
+        global_support_fraction = 0.25;
+        retention_width_scale = 1.25;
+        break;
+    case FilterStrength::Strict:
+        relative_peak_floor = 1e-5;
+        minimum_support_angles = 26;
+        minimum_consecutive_angles = 10;
+        maximum_gap_angles = 0;
+        relative_support_fraction = 0.85;
+        global_support_fraction = 0.4;
+        retention_width_scale = 0.8;
+        break;
+    default:
+        throw std::invalid_argument("unsupported filter strength");
+    }
+}
 
 bool PoolEstimate::retains(unsigned angle_grad, std::size_t bin) const {
     return angle_grad < retained_bins.size() && bin < retained_bins[angle_grad].size() &&
@@ -332,9 +406,10 @@ PoolEstimate infer_pool(const ScanProfiles &profiles, const InferenceOptions &op
         }
         const double direction = best.angle_rad + (side / 2) * pi / 2 + (side % 2) * pi;
         auto wall = refine_wall(points, std::cos(direction), std::sin(direction),
-                                best.planes[side].offset, tolerance);
+                                best.planes[side].offset, tolerance, options);
         if (wall.support_angles >= options.minimum_support_angles &&
-            wall.longest_run_angles >= options.minimum_consecutive_angles) {
+            wall.longest_run_angles >= options.minimum_consecutive_angles &&
+            !wall.segments.empty()) {
             result.walls.push_back(wall);
         }
     }
@@ -364,13 +439,18 @@ PoolEstimate infer_pool(const ScanProfiles &profiles, const InferenceOptions &op
             const auto coordinate = [&](const std::array<double, 2> &p) {
                 return -wall.normal_y * p[0] + wall.normal_x * p[1];
             };
-            if (tangent < coordinate(wall.first_xy_m) - tolerance ||
-                tangent > coordinate(wall.last_xy_m) + tolerance) {
+            const bool supported_segment =
+                std::any_of(wall.segments.begin(), wall.segments.end(), [&](const auto &segment) {
+                    return tangent >= coordinate(segment.first_xy_m) - tolerance &&
+                           tangent <= coordinate(segment.last_xy_m) + tolerance;
+                });
+            if (!supported_segment) {
                 continue;
             }
             nearest = distance;
-            radial_tolerance = (tolerance + wall.rms_residual_m * 2) / std::max(0.25, incidence) +
-                               result.bin_width_m;
+            radial_tolerance = options.retention_width_scale *
+                               ((tolerance + wall.rms_residual_m * 2) / std::max(0.25, incidence) +
+                                result.bin_width_m);
         }
         if (!std::isfinite(nearest)) {
             continue;

@@ -210,12 +210,67 @@ void abstention_and_long_pulse() {
     check(rejected, "negative input energy must be rejected");
 }
 
+void configurable_strength_and_disjoint_runs() {
+    RectangleFixture fixture;
+    auto scan = synthetic(fixture, 0.03, true, false);
+    for (unsigned angle = 0; angle < 400; ++angle) {
+        pulse(scan[angle], fixture.arrival(angle).first + 0.15, 0.03, 0.1, 2);
+    }
+    std::array<std::size_t, 3> retained{};
+    unsigned index = 0;
+    for (const auto strength : {viewer::FilterStrength::Relaxed, viewer::FilterStrength::Balanced,
+                                viewer::FilterStrength::Strict}) {
+        viewer::InferenceOptions options;
+        options.pulse_width_m = 0.03;
+        options.minimum_range_m = 0.6;
+        options.set_strength(strength);
+        check(options.pulse_width_m == 0.03 && options.minimum_range_m == 0.6,
+              "strength presets must preserve acquisition widths and minimum range");
+        const auto estimate = viewer::infer_pool(scan, options);
+        check_fixture(estimate, fixture, 0.15);
+        for (const auto &mask : estimate.retained_bins) {
+            retained[index] += static_cast<std::size_t>(std::count(mask.begin(), mask.end(), 1));
+        }
+        ++index;
+    }
+    check(retained[0] > retained[2] && retained[0] >= retained[1] && retained[1] >= retained[2],
+          "Relaxed should retain more nearby measured signal than Strict in a fixed-wall fixture");
+    fixture.rotation_deg = 0;
+    auto interrupted = synthetic(fixture, 0.03, false, false);
+    for (unsigned angle = 8; angle <= 20; ++angle) {
+        for (auto &bin : interrupted[angle]) {
+            bin.direct_intensity = 0;
+        }
+    }
+    for (auto &bin : interrupted[30]) {
+        bin.direct_intensity = 0;
+    }
+    const auto estimate = viewer::infer_pool(interrupted);
+    const auto wall = std::find_if(estimate.walls.begin(), estimate.walls.end(),
+                                   [](const auto &candidate) { return candidate.normal_x > 0.99; });
+    check(wall != estimate.walls.end() && wall->segments.size() >= 2,
+          "independently supported disjoint runs should be retained as separate segments");
+    check(std::isnan(estimate.predicted_range_m[14]),
+          "a large unsupported heading gap must not be extrapolated into a wall mask");
+    check(std::isfinite(estimate.predicted_range_m[30]),
+          "a small supported gap can be bridged by the Balanced preset");
+    bool rejected = false;
+    try {
+        viewer::InferenceOptions options;
+        options.set_strength(static_cast<viewer::FilterStrength>(99));
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    check(rejected, "invalid strength values must be rejected");
+}
+
 } // namespace
 
 int main() {
     try {
         rectangle_and_opaque_channels();
         abstention_and_long_pulse();
+        configurable_strength_and_disjoint_runs();
         std::cout << "PASS: signal-only rectangular prior, stronger ghosts, scatter, channel-sum "
                      "invariance, partial/empty abstention and long pulses\n";
         return 0;

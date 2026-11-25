@@ -9,6 +9,7 @@ namespace viewer {
 struct SonarTexture {
     Texture2D texture{};
     unsigned revision{};
+    unsigned estimate_revision{};
     Channel channel{Channel::Combined};
     bool estimated_pool{};
     double gain_db{};

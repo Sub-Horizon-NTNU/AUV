@@ -59,6 +59,8 @@ int main(int argc, char **argv) {
         bool history_qa = false;
         bool playback_qa = false;
         bool estimated_qa = false;
+        bool coordinates_qa = false;
+        bool route_qa = false;
         bool returns = false;
         bool details = false;
         bool move_sonar = false;
@@ -76,6 +78,10 @@ int main(int argc, char **argv) {
                 }
             } else if (argument == "--estimated") {
                 estimated_qa = true;
+            } else if (argument == "--coordinates") {
+                coordinates_qa = true;
+            } else if (argument == "--route") {
+                route_qa = true;
             } else if (argument == "--history") {
                 history_qa = true;
             } else if (argument == "--playback") {
@@ -143,6 +149,13 @@ int main(int argc, char **argv) {
         model.help_open = guide;
         model.playback_open = playback_qa;
         model.set_estimated_pool(estimated_qa);
+        model.show_pool_coordinates = coordinates_qa;
+        if (route_qa) {
+            model.set_route_playing(true);
+            if (smoke_test) {
+                model.tick(0.5);
+            }
+        }
         model.set_scan_playing(scan);
         if (smoke_test && returns) {
             model.progress = 0.3;

@@ -34,6 +34,10 @@ struct Model {
     unsigned scan_revision{};
     PoolEstimate estimate;
     unsigned estimate_revision{};
+    FilterStrength filter_strength{FilterStrength::Balanced};
+    bool show_pool_coordinates{};
+    static constexpr unsigned route_steps = 48;
+    bool route_playing{};
     bool estimated_pool{};
     Channel channel{Channel::Combined};
     double gain_db{};
@@ -85,6 +89,9 @@ struct Model {
     void set_scan_playing(bool enabled);
     void set_channel(Channel new_channel);
     void set_estimated_pool(bool enabled);
+    void set_filter_strength(FilterStrength strength);
+    void set_route_playing(bool enabled);
+    sonar::Vec3 route_waypoint(unsigned index) const;
     double image_energy(unsigned heading, std::size_t bin) const;
     void select(std::size_t index);
     void cycle_echo(int delta);
@@ -110,6 +117,11 @@ struct Model {
     void align_with_sonar();
     sonar::Vec3 sonar_to_pool_direction(sonar::Vec3 local) const;
     sonar::Vec3 pool_to_sonar(sonar::Vec3 position) const;
+
+  private:
+    unsigned route_index{};
+    double route_elapsed_s{};
+    void advance_route(double seconds);
 };
 
 double route_transport_energy(const sonar::Config &config, const sonar::Echo &echo,

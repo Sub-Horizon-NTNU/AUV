@@ -11,6 +11,7 @@
 namespace viewer {
 
 using ScanProfiles = std::array<std::vector<sonar::RangeBin>, 400>;
+enum class FilterStrength { Relaxed, Balanced, Strict };
 
 struct InferenceOptions {
     // Apparent-range extent c*transmit_duration/2, in metres. Peak clusters use
@@ -19,10 +20,22 @@ struct InferenceOptions {
     double minimum_range_m{0.75};
     double relative_peak_floor{1e-6};
     unsigned minimum_support_angles{18};
-    unsigned minimum_consecutive_angles{8};
+    unsigned minimum_consecutive_angles{7};
+    unsigned maximum_gap_angles{2};
+    double relative_support_fraction{0.75};
+    double global_support_fraction{0.25};
+    double retention_width_scale{1.25};
+    // Changes filtering/evidence settings only; acquisition widths/ranges are preserved.
+    void set_strength(FilterStrength strength);
 };
 
 enum class PoolInferenceStatus { Insufficient, Partial, SupportedRectangle };
+
+struct EstimatedWallSegment {
+    std::array<double, 2> first_xy_m{};
+    std::array<double, 2> last_xy_m{};
+    unsigned support_angles{};
+};
 
 struct EstimatedWall {
     // Sonar-local XY plane: normal_x*x + normal_y*y = offset_m; offset>0.
@@ -31,7 +44,11 @@ struct EstimatedWall {
     double offset_m{};
     std::array<double, 2> first_xy_m{};
     std::array<double, 2> last_xy_m{};
+    // Supported disjoint runs; only small configurable heading gaps are bridged.
+    // Legacy first/last fields identify the longest supported segment.
+    std::vector<EstimatedWallSegment> segments;
     unsigned support_angles{};
+    // Connected run length may include the preset's small bridged heading gaps.
     unsigned longest_run_angles{};
     // Residual of observed peak points, NOT calibrated geometric accuracy.
     double rms_residual_m{};
