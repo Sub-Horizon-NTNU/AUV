@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -54,6 +55,10 @@ int main(int argc, char **argv) {
         int window_height = 800;
         bool guide = false;
         bool scan = false;
+        unsigned benchmark_frames = 0;
+        bool history_qa = false;
+        bool playback_qa = false;
+        bool estimated_qa = false;
         bool returns = false;
         bool details = false;
         bool move_sonar = false;
@@ -61,6 +66,20 @@ int main(int argc, char **argv) {
             const std::string argument = argv[index];
             if (argument == "--smoke-test") {
                 smoke_test = true;
+            } else if (argument == "--benchmark-frames" && index + 1 < argc) {
+                const std::string value = argv[++index];
+                const auto parsed =
+                    std::from_chars(value.data(), value.data() + value.size(), benchmark_frames);
+                if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() ||
+                    benchmark_frames < 1 || benchmark_frames > 10000) {
+                    throw std::invalid_argument("benchmark frames must be 1..10000");
+                }
+            } else if (argument == "--estimated") {
+                estimated_qa = true;
+            } else if (argument == "--history") {
+                history_qa = true;
+            } else if (argument == "--playback") {
+                playback_qa = true;
             } else if (argument == "--align-sonar") {
                 align_sonar = true;
             } else if (argument == "--wavefront") {
@@ -122,6 +141,8 @@ int main(int argc, char **argv) {
         model.settings_open = scattering_controls;
         model.details_open = details && !scattering_controls;
         model.help_open = guide;
+        model.playback_open = playback_qa;
+        model.set_estimated_pool(estimated_qa);
         model.set_scan_playing(scan);
         if (smoke_test && returns) {
             model.progress = 0.3;
@@ -131,6 +152,19 @@ int main(int argc, char **argv) {
             model.progress = 0.43;
             model.playing = false;
         }
+        if (benchmark_frames) {
+            model.progress = 0.43;
+            model.playing = false;
+            model.set_scan_playing(false);
+        }
+        if (history_qa) {
+            model.wavefront_mode = true;
+            model.set_scan_playing(true);
+            model.playing = true;
+            model.tick(4.5);
+            model.playing = false;
+            model.scan_playing = false;
+        }
         GraphicsResources graphics;
         SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT);
         InitWindow(window_width, window_height, "Ping360 - Follow the sound");
@@ -139,7 +173,7 @@ int main(int argc, char **argv) {
         }
         SetWindowMinSize(1000, 700);
         SetExitKey(KEY_NULL);
-        SetTargetFPS(60);
+        SetTargetFPS(benchmark_frames ? 0 : 60);
         // Use a locally installed UI font; other platforms retain raylib's default font.
         graphics.font = GetFontDefault();
         const char *font_path = "C:/Windows/Fonts/segoeui.ttf";
@@ -153,6 +187,8 @@ int main(int argc, char **argv) {
         }
         viewer::CameraInput camera_input;
         unsigned frames = 0;
+        double render_cpu_ms = 0;
+        double submit_cpu_ms = 0;
         while (!WindowShouldClose()) {
             if (IsKeyPressed(KEY_ESCAPE)) {
                 if (model.position_dragging || model.move_sonar_mode) {
@@ -160,9 +196,10 @@ int main(int argc, char **argv) {
                     model.move_sonar_mode = false;
                 } else if (model.help_open) {
                     model.help_open = false;
-                } else if (model.settings_open || model.details_open) {
+                } else if (model.settings_open || model.details_open || model.playback_open) {
                     model.settings_open = false;
                     model.details_open = false;
+                    model.playback_open = false;
                 } else {
                     break;
                 }
@@ -182,7 +219,13 @@ int main(int argc, char **argv) {
             const Vector2 mouse = GetMousePosition();
             viewer::update_camera_input(model, layout, camera_input, mouse);
             model.tick(GetFrameTime());
-            viewer::render_world(model, graphics.world, graphics.font);
+            const auto render_begin = std::chrono::steady_clock::now();
+            if (model.projection == viewer::Projection::Perspective) {
+                viewer::render_world(model, graphics.world, graphics.font);
+            }
+            render_cpu_ms += std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - render_begin)
+                                 .count();
             const float pixel_ratio =
                 static_cast<float>(GetRenderWidth()) / static_cast<float>(GetScreenWidth());
             viewer::render_sonar(model, graphics.sonar_image,
@@ -190,16 +233,24 @@ int main(int argc, char **argv) {
             BeginDrawing();
             viewer::draw_interface(model, graphics.world, graphics.sonar_image.texture, mouse,
                                    graphics.font, layout);
+            submit_cpu_ms += std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - render_begin)
+                                 .count();
             EndDrawing();
             ++frames;
-            if (smoke_test && frames >= 8) {
+            if ((benchmark_frames && frames >= benchmark_frames) || (smoke_test && frames >= 8)) {
                 if (!screenshot_path.empty()) {
                     TakeScreenshot(screenshot_path.string().c_str());
                 }
                 break;
             }
         }
-        if (!smoke_test && !screenshot_path.empty()) {
+        if (benchmark_frames) {
+            std::cout << "render_world CPU average " << render_cpu_ms / frames << " ms over "
+                      << frames << " frames; total render CPU submission " << submit_cpu_ms / frames
+                      << " ms/frame (excludes frame wait)\n";
+        }
+        if (!smoke_test && !benchmark_frames && !screenshot_path.empty()) {
             TakeScreenshot(screenshot_path.string().c_str());
         }
         return 0;

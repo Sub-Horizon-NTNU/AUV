@@ -1,5 +1,6 @@
 #pragma once
 
+#include "inference.hpp"
 #include "sonar/simulator.hpp"
 #include "wavefront.hpp"
 
@@ -14,6 +15,14 @@ namespace viewer {
 enum class Projection { Perspective, Top, Side };
 enum class Channel { Combined, Direct, Multipath, Volume };
 
+// Owns the immutable launch geometry and physical age of one displayed emission.
+struct EmittedFront {
+    GeometricWavefront geometry;
+    unsigned angle_grad{};
+    unsigned revision{};
+    double age_s{};
+};
+
 // Owns a selected ping and all 400 stationary scan profiles. Display changes reuse the scan.
 struct Model {
     sonar::Config config;
@@ -23,6 +32,9 @@ struct Model {
     std::vector<sonar::Vec3> particles;
     double scan_reference{}; // Strongest combined range bin over all 400 stationary angles.
     unsigned scan_revision{};
+    PoolEstimate estimate;
+    unsigned estimate_revision{};
+    bool estimated_pool{};
     Channel channel{Channel::Combined};
     double gain_db{};
     double dynamic_range_db{80};
@@ -37,6 +49,15 @@ struct Model {
     std::size_t selected{};
     double progress{};
     bool playing{true};
+    bool loop_playback{true};
+    bool playback_open{};
+    bool transport_fade{true};
+    double playback_seconds{5};
+    double simulation_window_ms{}; // Zero selects the automatic physical display horizon.
+    std::vector<EmittedFront> emitted_fronts;
+    mutable WavefrontFrame front_scratch;
+    double emission_phase_s{};
+    bool emission_started{};
     Projection projection{Projection::Perspective};
     bool sonar_aligned{};
     float orbit_deg{35.0F};
@@ -63,10 +84,15 @@ struct Model {
     void advance_scan(double seconds);
     void set_scan_playing(bool enabled);
     void set_channel(Channel new_channel);
+    void set_estimated_pool(bool enabled);
+    double image_energy(unsigned heading, std::size_t bin) const;
     void select(std::size_t index);
     void cycle_echo(int delta);
     void select_range(double range_m);
     void tick(double seconds);
+    void restart_playback();
+    double display_horizon_s() const;
+    double emission_rate_hz() const;
     const sonar::Echo *echo() const;
     bool accepts(const sonar::Echo &arrival) const;
     bool received_route(const sonar::Echo &arrival) const;
@@ -86,6 +112,8 @@ struct Model {
     sonar::Vec3 pool_to_sonar(sonar::Vec3 position) const;
 };
 
+double route_transport_energy(const sonar::Config &config, const sonar::Echo &echo,
+                              double fraction);
 double return_fraction(const sonar::Echo &echo);
 sonar::Vec3 path_position(const sonar::Echo &echo, double fraction);
 // Uses the existing pool-frame first segment, preserving the core pose transform.

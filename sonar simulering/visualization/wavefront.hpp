@@ -2,6 +2,7 @@
 
 #include "sonar/simulator.hpp"
 
+#include <array>
 #include <cstddef>
 #include <utility>
 #include <vector>
@@ -15,6 +16,9 @@ struct WavefrontPoint {
     unsigned segment_index{}; // Number of crossed planes; zero is the incident front.
     sonar::Vec3 position_m;
     sonar::Vec3 direction; // Instantaneous propagation direction; zero for mesh seam vertices.
+    // Relative geometric transport energy, not pressure or received-profile intensity.
+    // Seam vertices interpolate adjacent physical-ray energies for display continuity.
+    double relative_energy{};
 };
 
 struct WavefrontFrame {
@@ -27,6 +31,8 @@ struct WavefrontFrame {
 struct WavefrontRay {
     unsigned ray_id{};
     sonar::Vec3 direction; // Unit launch direction in the pool frame.
+    // Cached logarithms of coherent energy survival at xmin,xmax,ymin,ymax,floor,surface.
+    std::array<double, 6> log_face_survival{};
 };
 
 /**
@@ -34,9 +40,12 @@ struct WavefrontRay {
  * an omnidirectional wave, interference, diffraction or a wave-equation solution.
  * Cache launch directions once per configuration/angle. Sampling folds straight
  * propagation through mirrored copies of the rectangular pool. Every ray persists
- * until Rmax/c, including travel before/after contacts retained by the echo model.
- * This ideal-mirror geometry deliberately ignores material energy loss and the echo
- * hit budget. Diffuse branches, particle-scattered fronts and echo retraces are absent.
+ * until the chosen diagnostic horizon (Rmax/c by default), including travel
+ * before/after contacts retained by the echo model.
+ * Geometry ignores the echo hit budget. A relative transport-energy proxy combines
+ * one-way absorption, inverse-square spreading and coherent material survival at each
+ * crossed face. Zero energy does not erase geometry. Diffuse branches, particle-
+ * scattered fronts, interference and echo retraces are absent.
  */
 struct GeometricWavefront {
     unsigned horizontal_rays{};
@@ -46,14 +55,19 @@ struct GeometricWavefront {
     sonar::Vec3 origin_m;
     sonar::Vec3 dimensions_m;
     std::vector<WavefrontRay> rays;
+    double absorption_per_m{};
 
     /// One-way propagation window Rmax/c seconds, independent of any selected echo.
-    double duration_s() const;
+    /// horizon_s=0 retains Rmax/c. An explicit 0.001..0.1 s horizon changes only this
+    /// geometric diagnostic's lifetime, never the numerical receiver range cutoff.
+    double duration_s(double horizon_s = 0) const;
     /// Traveled distance = c*time_s. Returns empty after the propagation window.
     /// The first rays.size() points are ray samples; subsequent points split wall seams
     /// and carry UINT_MAX for ray/grid indices. Negative/non-finite time throws
     /// std::invalid_argument. A fixed seam-work guard throws std::runtime_error if exceeded.
-    WavefrontFrame sample_at_time(double time_s) const;
+    WavefrontFrame sample_at_time(double time_s, double horizon_s = 0) const;
+    /// Same result as sample_at_time, retaining output vector capacities between calls.
+    void sample_into(double time_s, WavefrontFrame &frame, double horizon_s = 0) const;
 };
 
 /// Uses an independent 32 x 192 fan by default, with at most 262144 rays.

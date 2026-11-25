@@ -159,6 +159,7 @@ int main() {
         model.set_scan_playing(false);
         model.progress = 0.2;
         model.playing = true;
+        model.loop_playback = false;
         model.tick(6);
         check(!model.playing && model.progress == 1,
               "single-angle pulse playback still stops after one traversal");
@@ -222,6 +223,127 @@ int main() {
               "out-of-window geometry is not a received return");
         model.ping = saved_ping;
         model.channel = saved_channel;
+        viewer::Model history({});
+        history.wavefront_mode = true;
+        history.set_scan_playing(true);
+        history.tick(1);
+        check(history.emitted_fronts.size() == 5,
+              "illustrative scan emits distinct fronts on its cadence");
+        const auto first_angle = history.emitted_fronts.front().angle_grad;
+        const auto first_direction = history.emitted_fronts.front().geometry.rays.front().direction;
+        const auto first_origin = history.emitted_fronts.front().geometry.origin_m;
+        const double first_age = history.emitted_fronts.front().age_s;
+        history.tick(.1);
+        check(history.emitted_fronts.front().angle_grad == first_angle &&
+                  history.emitted_fronts.front().age_s > first_age,
+              "previous fronts age independently without rotating to the current head");
+        near(history.emitted_fronts.front().geometry.rays.front().direction, first_direction,
+             "emission direction is immutable");
+        near(history.emitted_fronts.front().geometry.origin_m, first_origin,
+             "emission origin is immutable");
+        history.set_scan_playing(false);
+        const double before_head_pause_age = history.emitted_fronts.front().age_s;
+        const unsigned paused_head = history.ping.angle_grad;
+        history.tick(.1);
+        check(history.ping.angle_grad == paused_head &&
+                  history.emitted_fronts.front().angle_grad == first_angle &&
+                  history.emitted_fronts.front().age_s > before_head_pause_age,
+              "stopping the head preserves emitted geometry and advancing pulse ages");
+        history.playing = false;
+        const auto paused_age = history.emitted_fronts.front().age_s;
+        const auto paused_count = history.emitted_fronts.size();
+        history.tick(2);
+        check(history.emitted_fronts.size() == paused_count &&
+                  history.emitted_fronts.front().age_s == paused_age,
+              "pulse pause freezes ages and suppresses emissions while the head may turn");
+        history.playing = true;
+        history.tick(10);
+        check(history.emitted_fronts.size() <= 32 &&
+                  std::all_of(history.emitted_fronts.begin(), history.emitted_fronts.end(),
+                              [&](const viewer::EmittedFront &front) {
+                                  return front.age_s <= history.display_horizon_s() + 1e-12;
+                              }),
+              "expired fronts are removed and retained history is bounded");
+        history.set_angle(30);
+        check(history.emitted_fronts.empty(), "manual heading clears prior front history");
+        history.loop_playback = true;
+        history.playback_seconds = 5;
+        history.progress = .2;
+        history.tick(12);
+        check(std::abs(history.progress - .6) < 1e-10 && history.playing,
+              "auto replay preserves remainder across multiple cycles");
+        viewer::Model paused_launch({});
+        paused_launch.wavefront_mode = true;
+        paused_launch.playing = false;
+        paused_launch.progress = .4;
+        paused_launch.set_scan_playing(true);
+        const auto launch_heading = paused_launch.emitted_fronts.front().angle_grad;
+        const auto launch_age = paused_launch.emitted_fronts.front().age_s;
+        paused_launch.tick(1);
+        check(paused_launch.emitted_fronts.size() == 1 &&
+                  paused_launch.emitted_fronts.front().angle_grad == launch_heading &&
+                  paused_launch.emitted_fronts.front().age_s == launch_age,
+              "starting the rotating head while pulse-paused snapshots the existing front rather "
+              "than rotating it");
+        viewer::Model partitioned({});
+        viewer::Model whole({});
+        for (auto *state : {&partitioned, &whole}) {
+            state->wavefront_mode = true;
+            state->set_scan_playing(true);
+        }
+        whole.tick(1);
+        for (int step = 0; step < 10; ++step)
+            partitioned.tick(.1);
+        check(whole.emitted_fronts.size() == partitioned.emitted_fronts.size(),
+              "front emission count is independent of dt partition");
+        for (std::size_t index = 0; index < whole.emitted_fronts.size(); ++index) {
+            check(whole.emitted_fronts[index].angle_grad ==
+                          partitioned.emitted_fronts[index].angle_grad &&
+                      std::abs(whole.emitted_fronts[index].age_s -
+                               partitioned.emitted_fronts[index].age_s) < 1e-10,
+                  "front launch angles and ages are independent of frame rate");
+        }
+        const auto unchanged_range = history.config.settings.max_range_m;
+        history.simulation_window_ms = 80;
+        check(history.display_horizon_s() == .08 &&
+                  history.config.settings.max_range_m == unchanged_range,
+              "explicit display horizon never changes core receiver range");
+        sonar::Echo proxy;
+        proxy.total_path_m = 10;
+        proxy.path = {{{0, 0, 0}, 0}, {{5, 0, 0}, 2}, {{0, 0, 0}, 0}};
+        auto fading = history.config;
+        fading.pool.wall_reflection = 0;
+        check(viewer::route_transport_energy(fading, proxy, .4) > 0 &&
+                  viewer::route_transport_energy(fading, proxy, .6) == 0,
+              "transport marker proxy loses all energy at an absorbing contact");
+        const auto inference_revision = model.estimate_revision;
+        const auto inference_mask = model.estimate.retained_bins[0];
+        const auto raw_reference = model.scan_reference;
+        model.gain_db = 7;
+        model.dynamic_range_db = 90;
+        model.set_channel(viewer::Channel::Multipath);
+        model.set_estimated_pool(true);
+        check(model.estimated_pool && model.channel == viewer::Channel::Combined &&
+                  model.gain_db == 7 && model.dynamic_range_db == 90,
+              "Estimated pool selects combined input without changing raw gain/span");
+        model.change_angle(1);
+        check(model.estimate_revision == inference_revision &&
+                  model.estimate.retained_bins[0] == inference_mask &&
+                  model.scan_reference == raw_reference,
+              "heading and display changes reuse the once-per-scan estimate");
+        for (unsigned heading = 0; heading < 400; heading += 13) {
+            for (std::size_t bin = 0; bin < model.scan[heading].size(); ++bin) {
+                const auto &sample = model.scan[heading][bin];
+                const double measured =
+                    sample.direct_intensity + sample.multipath_intensity + sample.volume_intensity;
+                const double shown = model.image_energy(heading, bin);
+                check(shown == 0 || shown == measured, "inference display retains observed energy "
+                                                       "without synthesizing or rescaling it");
+            }
+        }
+        model.set_channel(viewer::Channel::Direct);
+        check(!model.estimated_pool && model.gain_db == 7 && model.dynamic_range_db == 90,
+              "selecting a truth-debug channel exits Estimated mode and preserves gain/span");
         const auto before_move_pose = model.config.pose;
         const auto before_move_angle = model.ping.angle_grad;
         const auto before_move_channel = model.channel;
@@ -232,6 +354,7 @@ int main() {
         near(model.draft.pose.position_m, model.config.pose.position_m,
              "move synchronizes configuration draft");
         check(model.scan_revision == before_move_revision + 1 &&
+                  model.estimate_revision == model.scan_revision &&
                   model.ping.angle_grad == before_move_angle &&
                   model.channel == before_move_channel &&
                   model.config.pose.roll_deg == before_move_pose.roll_deg &&

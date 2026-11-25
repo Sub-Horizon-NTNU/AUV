@@ -161,9 +161,10 @@ try {
         $tools.GetEnumerator() | ForEach-Object { Write-Host "$($_.Key): $($_.Value)" }
         exit 0
     }
+    $buildType = if ($Action -eq 'View') { 'RelWithDebInfo' } else { 'Debug' }
     $configureArguments = @('-S', $projectRoot, '-B', $buildRoot, '-G', 'Ninja',
         "-DCMAKE_CXX_COMPILER=$($tools.Compiler)", "-DCMAKE_MAKE_PROGRAM=$($tools.Ninja)",
-        '-DCMAKE_BUILD_TYPE=Debug', '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON')
+        "-DCMAKE_BUILD_TYPE=$buildType", '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON')
     if ($Action -eq 'View') {
         $configureArguments += @('-DSONAR_BUILD_VIEWER=ON', "-DCMAKE_C_COMPILER=$(Join-Path (Split-Path $tools.Compiler -Parent) 'gcc.exe')")
     } else {

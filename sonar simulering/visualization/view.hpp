@@ -10,6 +10,7 @@ struct SonarTexture {
     Texture2D texture{};
     unsigned revision{};
     Channel channel{Channel::Combined};
+    bool estimated_pool{};
     double gain_db{};
     double dynamic_range_db{};
 };

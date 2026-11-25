@@ -75,6 +75,17 @@ double slider(Rectangle area, double value, Vector2 mouse, Color color) {
     return value;
 }
 
+Color transport_color(Color color, double energy, bool enabled) {
+    const double level = !enabled      ? 1.0
+                         : energy <= 0 ? 0.0
+                                       : std::clamp((10 * std::log10(energy) + 60) / 60, 0.0, 1.0);
+    color.r = static_cast<unsigned char>(color.r * level);
+    color.g = static_cast<unsigned char>(color.g * level);
+    color.b = static_cast<unsigned char>(color.b * level);
+    color.a = static_cast<unsigned char>(color.a * level);
+    return color;
+}
+
 Vector3 point(sonar::Vec3 value) {
     // Core pool coordinates are z-up; raylib's world is y-up.
     return {static_cast<float>(value.x), static_cast<float>(value.z), static_cast<float>(value.y)};
@@ -164,8 +175,11 @@ void draw_world3d(const Model &model, RenderTexture2D target, Font font) {
                 path3d(arrival, index == model.selected);
                 if (model.playback_time_s() < arrival.travel_time_s) {
                     const double fraction = model.route_fraction(arrival);
-                    DrawSphereEx(point(path_position(arrival, fraction)), marker_scale * 0.008F, 4,
-                                 4, fraction <= return_fraction(arrival) ? cyan : amber);
+                    DrawSphereEx(
+                        point(path_position(arrival, fraction)), marker_scale * 0.008F, 4, 4,
+                        transport_color(fraction <= return_fraction(arrival) ? cyan : amber,
+                                        route_transport_energy(model.config, arrival, fraction),
+                                        model.transport_fade));
                 }
             }
         }
@@ -189,29 +203,52 @@ void draw_world3d(const Model &model, RenderTexture2D target, Font font) {
         DrawLine3D(point(echo->path.front().position_m), point(apparent), Color{110, 72, 132, 255});
         DrawSphereWires(point(apparent), marker_scale * 0.025F, 8, 8, ghost);
         DrawSphere(point(path_position(*echo, model.route_fraction(*echo))), marker_scale * 0.018F,
-                   model.route_fraction(*echo) <= return_fraction(*echo) ? cyan : amber);
+                   transport_color(
+                       model.route_fraction(*echo) <= return_fraction(*echo) ? cyan : amber,
+                       route_transport_energy(model.config, *echo, model.route_fraction(*echo)),
+                       model.transport_fade));
     }
     if (model.wavefront_mode) {
-        const auto front =
-            model.wavefront.sample_at_time(model.progress * model.wavefront.duration_s());
-        for (const auto &link : front.links) {
-            DrawLine3D(point(front.points[link.first].position_m),
-                       point(front.points[link.second].position_m),
-                       front.points[link.first].segment_index == 0 &&
-                               front.points[link.second].segment_index == 0
-                           ? cyan
-                           : amber);
-        }
-        for (const auto &sample : front.points) {
-            DrawPoint3D(point(sample.position_m), sample.segment_index == 0 ? cyan : amber);
-            if (direction_sample(sample, model.wavefront)) {
-                const double size = marker_scale * 0.065;
-                const auto tip = sample.position_m + sample.direction * size;
-                const auto head = sample.position_m + sample.direction * (size * 0.7);
-                const Color color = sample.segment_index == 0 ? cyan : amber;
-                DrawLine3D(point(sample.position_m), point(tip), color);
-                DrawCylinderEx(point(head), point(tip), static_cast<float>(size * 0.09), 0, 8,
-                               color);
+        const auto draw_front = [&](const GeometricWavefront &geometry, double age, bool trailing) {
+            if (age < 0) {
+                return;
+            }
+            geometry.sample_into(age, model.front_scratch, model.simulation_window_ms / 1000);
+            const auto &front = model.front_scratch;
+            for (const auto &link : front.links) {
+                const auto &first = front.points[link.first];
+                const auto &last = front.points[link.second];
+                Color color = first.segment_index == 0 && last.segment_index == 0 ? cyan : amber;
+                if (trailing) {
+                    color.a = 90;
+                }
+                DrawLine3D(point(first.position_m), point(last.position_m),
+                           transport_color(color,
+                                           std::min(first.relative_energy, last.relative_energy),
+                                           model.transport_fade));
+            }
+            for (const auto &sample : front.points) {
+                const Color color = transport_color(sample.segment_index == 0 ? cyan : amber,
+                                                    sample.relative_energy, model.transport_fade);
+                DrawPoint3D(point(sample.position_m), color);
+                if (!trailing && direction_sample(sample, geometry)) {
+                    const auto tip = sample.position_m + sample.direction * (extent * .05);
+                    DrawLine3D(point(sample.position_m), point(tip), color);
+                }
+            }
+        };
+        const double width = model.config.settings.transmit_duration_us * 1e-6;
+        const auto pulse = [&](const GeometricWavefront &geometry, double age) {
+            draw_front(geometry, age, false);
+            if (width * model.config.settings.sound_speed_m_s > extent * .004) {
+                draw_front(geometry, age - width, true);
+            }
+        };
+        if (model.emitted_fronts.empty()) {
+            pulse(model.wavefront, model.playback_time_s());
+        } else {
+            for (const auto &emission : model.emitted_fronts) {
+                pulse(emission.geometry, emission.age_s);
             }
         }
     }
@@ -245,9 +282,12 @@ void draw_world2d(Model &model, Font font, Rectangle world_area) {
     const bool side = model.projection == Projection::Side;
     const auto &pool = model.config.pool;
     const bool aligned = model.sonar_aligned && !side;
+    const auto basis_x = model.sonar_to_pool_direction({1, 0, 0});
+    const auto basis_y = model.sonar_to_pool_direction({0, 1, 0});
     const auto coordinates = [&](sonar::Vec3 value) {
         if (aligned) {
-            const auto local = model.pool_to_sonar(value);
+            const auto delta = value - model.config.pose.position_m;
+            const sonar::Vec3 local{sonar::dot(delta, basis_x), sonar::dot(delta, basis_y), 0};
             return Vector2{static_cast<float>(-local.y), static_cast<float>(local.x)};
         }
         return Vector2{static_cast<float>(value.x), static_cast<float>(side ? value.z : value.y)};
@@ -333,7 +373,9 @@ void draw_world2d(Model &model, Font font, Rectangle world_area) {
             if (model.playback_time_s() < arrival.travel_time_s) {
                 const double fraction = model.route_fraction(arrival);
                 DrawCircleV(project(path_position(arrival, fraction)), 3,
-                            fraction <= return_fraction(arrival) ? cyan : amber);
+                            transport_color(fraction <= return_fraction(arrival) ? cyan : amber,
+                                            route_transport_energy(model.config, arrival, fraction),
+                                            model.transport_fade));
             }
         }
     }
@@ -349,32 +391,55 @@ void draw_world2d(Model &model, Font font, Rectangle world_area) {
                    ghost);
         DrawCircleLinesV(project(apparent_position(*echo)), 8, ghost);
         DrawCircleV(project(path_position(*echo, model.route_fraction(*echo))), 6,
-                    model.route_fraction(*echo) <= return_fraction(*echo) ? cyan : amber);
+                    transport_color(
+                        model.route_fraction(*echo) <= return_fraction(*echo) ? cyan : amber,
+                        route_transport_energy(model.config, *echo, model.route_fraction(*echo)),
+                        model.transport_fade));
         DrawCircleLinesV(project(echo->path[echo->outward_hits].position_m), 8, amber);
     }
     if (model.wavefront_mode) {
-        const auto front =
-            model.wavefront.sample_at_time(model.progress * model.wavefront.duration_s());
-        for (const auto &link : front.links) {
-            DrawLineEx(project(front.points[link.first].position_m),
-                       project(front.points[link.second].position_m), 2,
-                       front.points[link.first].segment_index == 0 &&
-                               front.points[link.second].segment_index == 0
-                           ? cyan
-                           : amber);
-        }
-        for (const auto &sample : front.points) {
-            DrawCircleV(project(sample.position_m), 3, sample.segment_index == 0 ? cyan : amber);
-            if (direction_sample(sample, model.wavefront)) {
-                const auto start = project(sample.position_m);
-                const auto projected = project(sample.position_m + sample.direction);
-                const float dx = projected.x - start.x;
-                const float dy = projected.y - start.y;
-                const float magnitude = std::hypot(dx, dy);
-                if (magnitude > 1e-4F) {
-                    arrow2d(start, {start.x + dx / magnitude * 26, start.y + dy / magnitude * 26},
-                            sample.segment_index == 0 ? cyan : amber, 2.5F);
+        const auto draw_front = [&](const GeometricWavefront &geometry, double age, bool trailing) {
+            if (age < 0) {
+                return;
+            }
+            geometry.sample_into(age, model.front_scratch, model.simulation_window_ms / 1000);
+            const auto &front = model.front_scratch;
+            for (const auto &link : front.links) {
+                const auto &first = front.points[link.first];
+                const auto &last = front.points[link.second];
+                Color color = first.segment_index == 0 && last.segment_index == 0 ? cyan : amber;
+                if (trailing) {
+                    color.a = 90;
                 }
+                DrawLineV(project(first.position_m), project(last.position_m),
+                          transport_color(color,
+                                          std::min(first.relative_energy, last.relative_energy),
+                                          model.transport_fade));
+            }
+            if (!trailing) {
+                for (const auto &sample : front.points) {
+                    if (direction_sample(sample, geometry)) {
+                        const auto start = project(sample.position_m);
+                        const auto tip = project(sample.position_m + sample.direction * .25);
+                        arrow2d(start, tip,
+                                transport_color(sample.segment_index == 0 ? cyan : amber,
+                                                sample.relative_energy, model.transport_fade));
+                    }
+                }
+            }
+        };
+        const double width = model.config.settings.transmit_duration_us * 1e-6;
+        const auto pulse = [&](const GeometricWavefront &geometry, double age) {
+            draw_front(geometry, age, false);
+            if (width * model.config.settings.sound_speed_m_s * scale > 1) {
+                draw_front(geometry, age - width, true);
+            }
+        };
+        if (model.emitted_fronts.empty()) {
+            pulse(model.wavefront, model.playback_time_s());
+        } else {
+            for (const auto &emission : model.emitted_fronts) {
+                pulse(emission.geometry, emission.age_s);
             }
         }
     }
@@ -385,7 +450,8 @@ void draw_world2d(Model &model, Font font, Rectangle world_area) {
         if (model.position_dragging || hovered) {
             SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
         }
-        const bool overlays = model.help_open || model.settings_open || model.details_open;
+        const bool overlays =
+            model.help_open || model.settings_open || model.details_open || model.playback_open;
         if (!overlays && hovered && CheckCollisionPointRec(mouse, world_area) &&
             IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             model.position_dragging = true;
@@ -451,8 +517,9 @@ void inspector(Model &model, Vector2 mouse, Font font) {
                   number(echo->arrival_elevation_deg, 1) + " deg",
               998, 305, 17, muted);
         auto route_contacts = contacts(*echo);
-        if (route_contacts.size() > 70)
+        if (route_contacts.size() > 70) {
             route_contacts = route_contacts.substr(0, 67) + "...";
+        }
         wrapped(font, std::to_string(echo->interaction_count) + " contacts: " + route_contacts, 998,
                 333, 398, 16, text);
         const char *route_name = "Legacy retrace";
@@ -589,6 +656,12 @@ void configuration(Model &model, Vector2 mouse, Font font) {
 
 void sonar_panel(Model &model, Texture2D texture, Vector2 mouse, Font font) {
     DrawRectangleRec({494, 112, 460, 410}, panel);
+    if (button(font, "Raw returns", {504, 88, 214, 28}, mouse, !model.estimated_pool)) {
+        model.set_estimated_pool(false);
+    }
+    if (button(font, "Estimated pool", {726, 88, 214, 28}, mouse, model.estimated_pool)) {
+        model.set_estimated_pool(true);
+    }
     const char *names[]{"All", "Direct", "Multipath", "Particles"};
     for (unsigned index = 0; index < 4; ++index) {
         const auto channel = static_cast<Channel>(index);
@@ -609,13 +682,13 @@ void sonar_panel(Model &model, Texture2D texture, Vector2 mouse, Font font) {
     const float angle = static_cast<float>(model.ping.angle_grad) * 0.9F * DEG2RAD;
     DrawLineV(center, {center.x - std::sin(angle) * radius, center.y - std::cos(angle) * radius},
               Color{200, 214, 226, 150});
-    if (const auto *echo = model.echo()) {
+    if (const auto *echo = model.echo(); echo && !model.estimated_pool) {
         const float r =
             static_cast<float>(echo->apparent_range_m / model.config.settings.max_range_m) * radius;
         DrawCircleLinesV({center.x - std::sin(angle) * r, center.y - std::cos(angle) * r}, 5,
                          WHITE);
     }
-    if (model.all_returns && !model.wavefront_mode) {
+    if (model.all_returns && !model.wavefront_mode && !model.estimated_pool) {
         for (const auto &arrival : model.ping.echoes) {
             if (model.received_route(arrival) && model.playback_time_s() >= arrival.travel_time_s) {
                 const float r = static_cast<float>(arrival.apparent_range_m /
@@ -626,7 +699,37 @@ void sonar_panel(Model &model, Texture2D texture, Vector2 mouse, Font font) {
             }
         }
     }
-    label(font, "+x / 0 grad", center.x - 37, 153, 16, muted);
+    if (model.estimated_pool) {
+        double residual = 0;
+        unsigned support = 400;
+        for (const auto &wall : model.estimate.walls) {
+            residual += wall.rms_residual_m;
+            support = std::min(support, wall.support_angles);
+        }
+        const bool insufficient = model.estimate.status == PoolInferenceStatus::Insufficient;
+        label(font,
+              insufficient
+                  ? "Insufficient evidence: raw shown"
+                  : std::to_string(model.estimate.walls.size()) +
+                        " walls; support >= " + std::to_string(support) + "; RMS " +
+                        number(residual / static_cast<double>(model.estimate.walls.size()), 3) +
+                        " m",
+              504, 153, 16, insufficient ? amber : cyan);
+        const auto project_wall = [&](const std::array<double, 2> &position) {
+            return Vector2{
+                center.x -
+                    static_cast<float>(position[1] / model.config.settings.max_range_m) * radius,
+                center.y -
+                    static_cast<float>(position[0] / model.config.settings.max_range_m) * radius};
+        };
+        for (const auto &wall : model.estimate.walls) {
+            DrawLineEx(project_wall(wall.first_xy_m), project_wall(wall.last_xy_m), 2, WHITE);
+        }
+        // Support/residual are geometric heuristics, not calibrated confidence probabilities.
+
+    } else {
+        label(font, "+x / 0 grad", center.x - 37, 153, 16, muted);
+    }
     label(font, "+y", 530, center.y - 10, 16, muted);
     label(font, "-y", 897, center.y - 10, 16, muted);
     const Vector2 axes_origin{sonar_image_area.x + 62, sonar_image_area.y + 64};
@@ -667,8 +770,8 @@ void render_world(const Model &model, RenderTexture2D world, Font font) {
 void render_sonar(const Model &model, SonarTexture &image, int requested_size) {
     const int size = std::clamp(requested_size, 384, 2048);
     if (image.texture.id && image.texture.width == size && image.revision == model.scan_revision &&
-        image.channel == model.channel && image.gain_db == model.gain_db &&
-        image.dynamic_range_db == model.dynamic_range_db) {
+        image.channel == model.channel && image.estimated_pool == model.estimated_pool &&
+        image.gain_db == model.gain_db && image.dynamic_range_db == model.dynamic_range_db) {
         return;
     }
     Image pixels = GenImageColor(size, size, background);
@@ -694,7 +797,7 @@ void render_sonar(const Model &model, SonarTexture &image, int requested_size) {
             for (int bin = std::max(0, index - footprint);
                  bin <= std::min(static_cast<int>(bins.size()) - 1, index + footprint); ++bin) {
                 energy =
-                    std::max(energy, model.channel_energy(bins[static_cast<std::size_t>(bin)]));
+                    std::max(energy, model.image_energy(heading, static_cast<std::size_t>(bin)));
             }
             const auto brightness = static_cast<unsigned char>(255 * model.display_level(energy));
             colors[y * size + x] = {static_cast<unsigned char>(brightness / 3), brightness,
@@ -709,13 +812,14 @@ void render_sonar(const Model &model, SonarTexture &image, int requested_size) {
     SetTextureFilter(image.texture, TEXTURE_FILTER_BILINEAR);
     image.revision = model.scan_revision;
     image.channel = model.channel;
+    image.estimated_pool = model.estimated_pool;
     image.gain_db = model.gain_db;
     image.dynamic_range_db = model.dynamic_range_db;
 }
 
 void update_camera_input(Model &model, const Layout &layout, CameraInput &input, Vector2 mouse) {
     const bool over_drawer =
-        (model.settings_open || model.details_open) &&
+        (model.settings_open || model.details_open || model.playback_open) &&
         CheckCollisionPointRec(mouse, {layout.configuration.x, layout.configuration.y,
                                        layout.configuration.width, layout.configuration.height});
     if (model.help_open || model.projection != Projection::Perspective) {
@@ -776,12 +880,14 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
                model.details_open)) {
         model.details_open = !model.details_open;
         model.settings_open = false;
+        model.playback_open = false;
     }
     header_x += 94 * s;
     if (button(font, "Settings", {header_x, layout.header.y, 85 * s, h}, active_mouse,
                model.settings_open)) {
         model.settings_open = !model.settings_open;
         model.details_open = false;
+        model.playback_open = false;
     }
     header_x += 94 * s;
     if (button(font, "Help [H]", {header_x, layout.header.y, 95 * s, h}, active_mouse)) {
@@ -790,9 +896,10 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
     if (IsKeyPressed(KEY_H)) {
         model.help_open = !model.help_open;
     }
-    const bool drawer = model.settings_open || model.details_open;
-    if (drawer || model.help_open)
+    const bool drawer = model.settings_open || model.details_open || model.playback_open;
+    if (drawer || model.help_open) {
         model.position_dragging = false;
+    }
     const bool over_drawer = drawer && CheckCollisionPointRec(mouse, box(layout.configuration));
     const Vector2 content_mouse =
         model.help_open || model.camera_dragging || model.position_dragging || over_drawer
@@ -862,16 +969,17 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
     if (button(font, "Ray paths", {ray.x + 10 * s, ray.y + 36 * s, 100 * s, h}, content_mouse,
                !model.wavefront_mode)) {
         model.wavefront_mode = false;
-        model.progress = 0;
+        model.restart_playback();
     }
     if (button(font, "Wavefront", {ray.x + 118 * s, ray.y + 36 * s, 110 * s, h}, content_mouse,
                model.wavefront_mode)) {
         model.wavefront_mode = true;
-        model.progress = 0;
+        model.restart_playback();
     }
     if (button(font, model.all_returns ? "All returns: on" : "All returns: off",
                {ray.x + 236 * s, ray.y + 36 * s, 195 * s, h}, content_mouse, model.all_returns)) {
         model.all_returns = !model.all_returns;
+        model.restart_playback();
     }
     if (button(font, "Markers", {ray.x + 439 * s, ray.y + 36 * s, 86 * s, h}, content_mouse,
                model.show_particle_markers)) {
@@ -891,7 +999,7 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
     EndScissorMode();
     text_at(!model.wavefront_mode && model.received_count() == 0
                 ? "No returns: try Wavefront or another angle"
-            : model.wavefront_mode ? "Arrows: cyan incident / amber reflected"
+            : model.wavefront_mode ? "Cyan: incident / Amber: reflected | relative fade"
                                    : "Cyan: outward / Amber: return / Purple: apparent echo",
             ray.x + 10 * s, ray.y + ray.height - 44 * s, 14, muted);
     text_at(model.move_sonar_mode ? "Drag TX / RX; release updates all 400 angles"
@@ -919,7 +1027,7 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
         EndScissorMode();
     };
     draw_panel(
-        {494, 112, 460, 410}, layout.image_panel,
+        {494, 78, 460, 444}, layout.image_panel,
         [&](Vector2 local) { sonar_panel(model, sonar_image, local, font); }, content_mouse);
     // Native timeline: scan rotation and echo propagation have independent clocks.
     const auto t = layout.transport;
@@ -945,6 +1053,12 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
     if (button(font, "+", {t.x + 196 * s, y, 28 * s, h}, content_mouse)) {
         model.scan_speed_grad_s = std::min(80.0, model.scan_speed_grad_s + 10);
     }
+    if (button(font, "Playback...", {t.x + t.width - 130 * s, y, 130 * s, h}, content_mouse,
+               model.playback_open)) {
+        model.playback_open = !model.playback_open;
+        model.settings_open = false;
+        model.details_open = false;
+    }
     text_at(number(400 / model.scan_speed_grad_s, 1) + " s/revolution (illustration, static pose)",
             t.x + 238 * s, y + 5 * s, 15, muted);
     y += 32 * s;
@@ -956,19 +1070,25 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
         model.playing = !model.playing;
     }
     if (button(font, "Replay", {t.x + 120 * s, y, 80 * s, h}, content_mouse)) {
-        model.progress = 0;
-        model.playing = true;
+        model.restart_playback();
     }
     const double progress =
         slider({t.x + 218 * s, y, t.width - 230 * s, h}, model.progress, content_mouse, amber);
     if (progress != model.progress) {
         model.progress = progress;
         model.playing = false;
+        model.emitted_fronts.clear();
+        model.emission_started = false;
+        model.emission_phase_s = 0;
     }
     std::string timing = "Manual angle/image selection pauses the 360 scan.";
     if (model.wavefront_mode) {
-        timing = "One-way front t=" + number(model.progress * model.wavefront.duration_s() * 1000) +
-                 " ms; slowed to 5 s playback.";
+        timing = model.emitted_fronts.empty()
+                     ? "Front t=" + number(model.playback_time_s() * 1000) + " ms | " +
+                           number(model.playback_seconds, 1) + " s/display cycle"
+                     : std::to_string(model.emitted_fronts.size()) +
+                           " emitted fronts, independent ages | " +
+                           number(model.playback_seconds, 1) + " s travel display";
     } else if (model.all_returns) {
         timing = "Received paths: " + std::to_string(model.arrived_count()) + " / " +
                  std::to_string(model.received_count()) +
@@ -1048,7 +1168,60 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
             model.help_open || model.camera_dragging || model.position_dragging
                 ? Vector2{-10000, -10000}
                 : mouse;
-        if (model.settings_open) {
+        if (model.playback_open) {
+            DrawRectangleRec(box(p), panel);
+            const float px = p.x + 18;
+            float py = p.y + 20;
+            label(font, "PLAYBACK / TRANSMISSION", px, py, 21);
+            py += 40;
+            if (button(font, model.loop_playback ? "Loop: on" : "Loop: off",
+                       {px, py, p.width - 36, 30}, drawer_mouse, model.loop_playback)) {
+                model.loop_playback = !model.loop_playback;
+            }
+            py += 42;
+            const auto adjustment = [&](const std::string &caption, double &value, double lower,
+                                        double upper, double step) {
+                label(font, caption, px, py + 5, 18, muted);
+                if (button(font, "-", {p.x + p.width - 86, py, 30, 28}, drawer_mouse)) {
+                    value = std::max(lower, value - step);
+                    model.restart_playback();
+                }
+                if (button(font, "+", {p.x + p.width - 48, py, 30, 28}, drawer_mouse)) {
+                    value = std::min(upper, value + step);
+                    model.restart_playback();
+                }
+                py += 40;
+            };
+            adjustment("Display cycle: " + number(model.playback_seconds, 0) + " s",
+                       model.playback_seconds, 1, 30, 1);
+            adjustment("View window: " + (model.simulation_window_ms == 0
+                                              ? std::string("Auto")
+                                              : number(model.simulation_window_ms, 0) + " ms"),
+                       model.simulation_window_ms, 0, 100, 1);
+            label(font, "Receiver range is unchanged.", px, py, 18, muted);
+            py += 34;
+            if (button(font,
+                       model.transport_fade ? "Relative energy fade: on"
+                                            : "Relative energy fade: off",
+                       {px, py, p.width - 36, 30}, drawer_mouse, model.transport_fade)) {
+                model.transport_fade = !model.transport_fade;
+            }
+            py += 40;
+            adjustment("TX width: " + number(model.draft.settings.transmit_duration_us, 0) + " us",
+                       model.draft.settings.transmit_duration_us, 1, 1000, 20);
+            if (button(font, "Apply draft / TX width", {px, py, p.width - 36, 30}, drawer_mouse)) {
+                model.apply(model.draft, model.ping.angle_grad);
+            }
+            py += 40;
+            wrapped(font,
+                    "TX width changes the pulse. Display time slows the picture. View window never "
+                    "changes receiver range. Fade is a transport proxy.",
+                    px, py, p.width - 36, 18, muted);
+            py += 72;
+            label(font,
+                  "Fronts: " + number(model.emission_rate_hz(), 2) + "/s, 8 x 64 mesh (visual)", px,
+                  py, 18, muted);
+        } else if (model.settings_open) {
             draw_panel(
                 {978, 457, 438, 406}, p, [&](Vector2 local) { configuration(model, local, font); },
                 drawer_mouse);
@@ -1094,9 +1267,10 @@ void draw_interface(Model &model, RenderTexture2D world, Texture2D sonar_image, 
                   "The sonar shows half the full sound route. A wall 4 m away gives an 8 m "
                   "roundtrip and is shown at 4 m. A reflected 12 m roundtrip is shown at 6 m along "
                   "the head bearing, even if no wall is there.");
-        paragraph("The circles are a ruler, not pool walls",
-                  "Rings mark apparent range. Bright shapes come from returns. Direct, Multi and "
-                  "Particles isolate modeled sources with one shared brightness reference.");
+        paragraph("Raw / Estimated and range rings",
+                  "Rings are range rulers. Estimated uses combined intensities and a level-scan "
+                  "rectangular-pool prior. White supported wall segments and retained measured "
+                  "bins are hypotheses, not measured position accuracy.");
         paragraph("One narrow fan rotates through 360 degrees",
                   "Ping360 has a nominal 2 degree horizontal by 25 degree vertical beam. One ping "
                   "illuminates that fan, not the entire circle. Play 360 scan uses an illustration "

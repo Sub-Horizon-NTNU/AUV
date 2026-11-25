@@ -208,6 +208,11 @@ void dense_front_continuity() {
             check(sonar::length(frame.points[ray].position_m - previous.points[ray].position_m) <=
                       step_m + 1e-9,
                   "ray trajectories cannot jump faster than sound speed at reflections");
+            check(std::isfinite(frame.points[ray].relative_energy) &&
+                      frame.points[ray].relative_energy >= 0 &&
+                      frame.points[ray].relative_energy <=
+                          previous.points[ray].relative_energy + 1e-14,
+                  "physical-ray transport energy must remain finite and weaken monotonically");
         }
         previous = frame;
     }
@@ -220,6 +225,119 @@ void dense_front_continuity() {
     inside(frame, config);
 }
 
+void relative_transport_energy() {
+    sonar::Config config;
+    config.settings.absorption_per_m = 0.1;
+    config.settings.backscatter_fraction = 0;
+    config.pool = {100, 100, 100, 1, 1, 1};
+    config.pose.position_m = {50, 50, 50};
+    const auto free = viewer::make_wavefront(config, 0, 1, 1);
+    near(free.sample_at_time(0).points[0].relative_energy, 1, "initial transport energy is one");
+    near(free.sample_at_time(0.5 / 1480).points[0].relative_energy, std::exp(-0.05),
+         "one-way intensity attenuation uses exp(-m*s), not a doubled pressure coefficient");
+    near(free.sample_at_time(2.0 / 1480).points[0].relative_energy, std::exp(-0.2) / 4,
+         "free propagation combines absorption and inverse-square spreading");
+    config = sonar::Config{};
+    config.settings.absorption_per_m = 0;
+    config.settings.backscatter_fraction = 0;
+    const auto reflected = viewer::make_wavefront(config, 0, 1, 1);
+    near(reflected.sample_at_time(5.0 / 1480).points[0].relative_energy, 0.8 / 25,
+         "exact high-wall contact includes its coherent energy loss");
+    near(reflected.sample_at_time(15.0 / 1480).points[0].relative_energy, 0.8 * 0.8 / 225,
+         "low and high wall losses both accumulate");
+    const auto low = viewer::make_wavefront(config, 200, 1, 1);
+    near(low.sample_at_time(5.0 / 1480).points[0].relative_energy, 0.8 / 25,
+         "exact low-wall contact also includes its loss");
+    config.pose.pitch_deg = 90;
+    const auto vertical = viewer::make_wavefront(config, 0, 1, 1);
+    near(vertical.sample_at_time(1.5 / 1480).points[0].relative_energy, 0.7 / (1.5 * 1.5),
+         "downward ray first crosses the floor coefficient");
+    near(vertical.sample_at_time(4.5 / 1480).points[0].relative_energy, 0.7 * 0.95 / (4.5 * 4.5),
+         "next vertical contact crosses the different surface coefficient");
+    near(vertical.sample_at_time(7.5 / 1480).points[0].relative_energy,
+         0.7 * 0.95 * 0.7 / (7.5 * 7.5),
+         "subsequent floor contact is counted separately from the surface");
+    config = sonar::Config{};
+    config.settings.absorption_per_m = 0;
+    config.settings.surface_model = sonar::SurfaceModel::Roughness;
+    config.settings.surface_roughness_m = 0.0002;
+    const double wavelength = config.settings.sound_speed_m_s / config.settings.frequency_hz;
+    const double sigma = 4 * 3.14159265358979323846 * 0.0002 / wavelength;
+    near(viewer::make_wavefront(config, 0, 1, 1)
+             .sample_at_time(5.0 / 1480)
+             .points[0]
+             .relative_energy,
+         0.8 * std::exp(-sigma * sigma) / 25,
+         "rough surfaces attenuate coherent continuation with the energy roughness factor");
+    config.settings.surface_model = sonar::SurfaceModel::Legacy;
+    config.settings.backscatter_fraction = 0;
+    config.pool.width_m = 10;
+    config.pose.position_m.y = 5;
+    const auto corner = viewer::make_wavefront(config, 50, 1, 1);
+    const double past_corner = std::sqrt(50.0) + 1e-8;
+    near(corner.sample_at_time(past_corner / 1480).points[0].relative_energy,
+         0.8 * 0.8 / (past_corner * past_corner),
+         "a corner accumulates both reflecting face losses");
+    config.pool.wall_reflection = 0;
+    const auto absorbing = viewer::make_wavefront(config, 0, 3, 3);
+    const auto dark = absorbing.sample_at_time(10.0 / 1480);
+    for (std::size_t ray = 0; ray < absorbing.rays.size(); ++ray) {
+        near(dark.points[ray].relative_energy, 0,
+             "zero coherent survival darkens but does not remove rays");
+    }
+    inside(dark, config);
+    for (const auto &sample : dark.points) {
+        check(std::isfinite(sample.relative_energy) && sample.relative_energy >= 0,
+              "physical and interpolated seam energy must remain finite and nonnegative");
+    }
+    config.pool.wall_reflection = 1;
+    const auto unit = viewer::make_wavefront(config, 0, 1, 1);
+    near(unit.sample_at_time(16.0 / 1480).points[0].relative_energy, 1.0 / 256,
+         "unit material survival leaves only geometric spreading");
+}
+
+void extended_horizon_and_reuse() {
+    sonar::Config config;
+    const auto wave = viewer::make_wavefront(config, 0, 3, 3);
+    check(wave.sample_at_time(0.05).points.empty(), "default lifetime remains Rmax/c");
+    near(wave.duration_s(0.1), 0.1, "explicit physical horizon is independent of receiver range");
+    const auto extended = wave.sample_at_time(0.05, 0.1);
+    check(extended.points.size() >= wave.rays.size(),
+          "longer diagnostic horizon retains the folded front");
+    inside(extended, config);
+    check(wave.max_range_m == 20 && config.settings.max_range_m == 20,
+          "explicit horizon must not modify receiver range configuration");
+    viewer::WavefrontFrame reused;
+    wave.sample_into(0.05, reused, 0.1);
+    check(reused.points.size() == extended.points.size() && reused.links == extended.links,
+          "in-place sampling preserves mesh topology");
+    for (std::size_t index = 0; index < extended.points.size(); ++index) {
+        near(sonar::length(reused.points[index].position_m - extended.points[index].position_m), 0,
+             "in-place and returned-frame geometry agree");
+        near(reused.points[index].relative_energy, extended.points[index].relative_energy,
+             "in-place and returned-frame transport energy agree");
+    }
+    const auto point_capacity = reused.points.capacity();
+    const auto link_capacity = reused.links.capacity();
+    wave.sample_into(0.101, reused, 0.1);
+    check(reused.points.empty() && reused.links.empty() &&
+              reused.points.capacity() == point_capacity &&
+              reused.links.capacity() == link_capacity,
+          "expired reusable frames clear contents while retaining capacity");
+    rejects([&] { wave.sample_at_time(0, -0.1); }, "negative horizon must be rejected");
+    rejects([&] { wave.sample_at_time(0, 0.1001); }, "horizon above 100 ms must be rejected");
+    rejects([&] { wave.sample_at_time(0, 0.0001); },
+            "explicit horizon below 1 ms must be rejected");
+    config.pool = {0.01, 0.01, 0.01, 0.8, 0.7, 0.95};
+    config.pose = {{0.005, 0.005, 0.005}, 37, 22, 14};
+    config.settings.sound_speed_m_s = 10000;
+    const auto small = viewer::make_wavefront(config, 0, 1, 2);
+    const auto many_seams = small.sample_at_time(0.1, 0.1);
+    check(many_seams.points.size() > 4096,
+          "extended horizon exercises seam counts beyond the old guard");
+    inside(many_seams, config);
+}
+
 } // namespace
 
 int main() {
@@ -228,8 +346,10 @@ int main() {
         topology_and_wall_seams();
         independent_geometry_and_pose();
         dense_front_continuity();
+        relative_transport_energy();
+        extended_horizon_and_reuse();
         std::cout << "PASS: full-window geometric travel, continuous reflections, wall seams, "
-                     "pose, energy independence, dense sampling and bounds\n";
+                     "pose, coherent transport energy, extended horizon, reuse and bounds\n";
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "FAIL: " << error.what() << '\n';

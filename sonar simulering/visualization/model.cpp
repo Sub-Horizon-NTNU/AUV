@@ -50,6 +50,10 @@ bool Model::apply(const sonar::Config &candidate, unsigned angle) {
                                                     bin.volume_intensity);
             }
         }
+        const InferenceOptions inference_options{
+            candidate.settings.sound_speed_m_s * candidate.settings.transmit_duration_us * 1e-6 / 2,
+            sonar::minimum_range_m};
+        auto fitted = infer_pool(profiles, inference_options);
         auto cloud = sonar::volume_points(candidate);
         auto front = make_wavefront(candidate, angle);
         config = candidate;
@@ -60,6 +64,8 @@ bool Model::apply(const sonar::Config &candidate, unsigned angle) {
         particles = std::move(cloud);
         wavefront = std::move(front);
         ++scan_revision;
+        estimate = std::move(fitted);
+        estimate_revision = scan_revision;
         selected = 0;
         const unsigned center_ray =
             (config.settings.horizontal_rays / 2) * config.settings.vertical_rays +
@@ -79,8 +85,7 @@ bool Model::apply(const sonar::Config &candidate, unsigned angle) {
                 }
             }
         }
-        progress = 0.0;
-        playing = true;
+        restart_playback();
         error = false;
         status = "400-angle stationary scan cached. Surface and particle models are uncalibrated "
                  "approximations.";
@@ -145,6 +150,7 @@ void Model::set_angle(unsigned angle, bool manual) {
         }
     }
     if (manual) {
+        restart_playback();
         scan_playing = false;
         scan_phase_grad = angle;
     }
@@ -153,6 +159,13 @@ void Model::set_angle(unsigned angle, bool manual) {
 void Model::set_scan_playing(bool enabled) {
     if (enabled && !scan_playing) {
         scan_phase_grad = ping.angle_grad;
+        if (wavefront_mode && !emission_started) {
+            emitted_fronts.push_back({make_wavefront(config, ping.angle_grad, 8, 64),
+                                      ping.angle_grad, scan_revision,
+                                      progress * display_horizon_s()});
+            emission_started = true;
+            emission_phase_s = 0;
+        }
     }
     scan_playing = enabled;
 }
@@ -178,6 +191,7 @@ void Model::advance_scan(double seconds) {
 }
 
 void Model::set_channel(Channel new_channel) {
+    estimated_pool = false;
     const auto *previous = echo();
     const double range_m = previous ? previous->apparent_range_m : 0.0;
     channel = new_channel;
@@ -185,6 +199,27 @@ void Model::set_channel(Channel new_channel) {
     if (echo() && !error) {
         status = "Selected the nearest eligible arrival in this channel.";
     }
+}
+
+void Model::set_estimated_pool(bool enabled) {
+    if (enabled) {
+        set_channel(Channel::Combined);
+    }
+    estimated_pool = enabled;
+    if (enabled) {
+        status = "Estimated pool: level-scan rectangular prior; support/residual are heuristics, "
+                 "not probabilities.";
+    }
+}
+
+double Model::image_energy(unsigned heading, std::size_t bin) const {
+    const auto &sample = scan[heading][bin];
+    if (!estimated_pool || estimate.status == PoolInferenceStatus::Insufficient) {
+        return channel_energy(sample);
+    }
+    return estimate.retains(heading, bin)
+               ? sample.direct_intensity + sample.multipath_intensity + sample.volume_intensity
+               : 0;
 }
 
 void Model::select(std::size_t index) {
@@ -246,15 +281,35 @@ bool Model::received_route(const sonar::Echo &arrival) const {
            arrival.path.size() >= 2;
 }
 
-double Model::playback_time_s() const {
+double Model::display_horizon_s() const {
+    if (simulation_window_ms > 0) {
+        return simulation_window_ms / 1000;
+    }
     if (wavefront_mode) {
-        return progress * wavefront.duration_s();
+        return wavefront.duration_s();
     }
     if (all_returns) {
-        return progress * 2 * config.settings.max_range_m / config.settings.sound_speed_m_s;
+        return 2 * config.settings.max_range_m / config.settings.sound_speed_m_s;
     }
     const auto *selected_echo = echo();
-    return selected_echo ? progress * selected_echo->travel_time_s : 0;
+    return selected_echo ? selected_echo->travel_time_s
+                         : 2 * config.settings.max_range_m / config.settings.sound_speed_m_s;
+}
+
+double Model::playback_time_s() const {
+    return progress * display_horizon_s();
+}
+
+double Model::emission_rate_hz() const {
+    return std::min(4.0, 31.0 / playback_seconds);
+}
+
+void Model::restart_playback() {
+    progress = 0;
+    playing = true;
+    emitted_fronts.clear();
+    emission_phase_s = 0;
+    emission_started = false;
 }
 
 double Model::route_fraction(const sonar::Echo &arrival) const {
@@ -274,6 +329,36 @@ std::size_t Model::received_count() const {
     return static_cast<std::size_t>(
         std::count_if(ping.echoes.begin(), ping.echoes.end(),
                       [&](const sonar::Echo &arrival) { return received_route(arrival); }));
+}
+
+double route_transport_energy(const sonar::Config &config, const sonar::Echo &echo,
+                              double fraction) {
+    const double distance = echo.total_path_m * std::clamp(fraction, 0.0, 1.0);
+    double energy = std::exp(-config.settings.absorption_per_m * distance) /
+                    std::pow(std::max(1.0, distance), 2);
+    double traveled = 0;
+    for (std::size_t index = 1; index + 1 < echo.path.size(); ++index) {
+        traveled += sonar::length(echo.path[index].position_m - echo.path[index - 1].position_m);
+        if (traveled > distance) {
+            break;
+        }
+        const auto &contact = echo.path[index];
+        if (contact.volume_scatter) {
+            energy *= config.settings.volume_strength;
+            continue;
+        }
+        const auto mask = contact.surface_mask;
+        for (unsigned face = 0; face < 6; ++face) {
+            if (!(mask & (1U << face))) {
+                continue;
+            }
+            energy *= face == 4   ? config.pool.floor_reflection
+                      : face == 5 ? config.pool.surface_reflection
+                                  : config.pool.wall_reflection;
+        }
+    }
+    return energy; // R-only contact proxy; does not replace calibrated scattering or receiver
+                   // energy.
 }
 
 double return_fraction(const sonar::Echo &echo) {
@@ -312,6 +397,18 @@ bool Model::select_image(double local_x, double local_y) {
     const double degrees = std::atan2(local_y, local_x) * 180 / 3.14159265358979323846;
     const auto angle =
         static_cast<unsigned>(std::lround((degrees < 0 ? degrees + 360 : degrees) / 0.9)) % 400;
+    if (estimated_pool) {
+        const auto bin =
+            std::min(scan[angle].size() - 1,
+                     static_cast<std::size_t>(radius * static_cast<double>(scan[angle].size())));
+        if (estimate.status != PoolInferenceStatus::Insufficient && !estimate.retains(angle, bin)) {
+            status = "No retained observed return here; the estimate assumes stationary "
+                     "rectangular walls.";
+            return false;
+        }
+        set_angle(angle);
+        return true;
+    }
     set_angle(angle);
     select_range(radius * config.settings.max_range_m);
     return true;
@@ -344,12 +441,57 @@ void Model::align_with_sonar() {
 }
 
 void Model::tick(double seconds) {
+    if (!std::isfinite(seconds) || seconds < 0) {
+        throw std::invalid_argument("playback step must be finite and nonnegative");
+    }
+    const double starting_angle = scan_playing ? scan_phase_grad : ping.angle_grad;
+    const double horizon = display_horizon_s();
+    if (playing && wavefront_mode && (scan_playing || emission_started)) {
+        // Immutable emission snapshots retain their launch pose and angle as the head moves.
+        for (auto &front : emitted_fronts) {
+            front.age_s += seconds * horizon / playback_seconds;
+        }
+        emitted_fronts.erase(std::remove_if(emitted_fronts.begin(), emitted_fronts.end(),
+                                            [&](const EmittedFront &front) {
+                                                return front.age_s > horizon + 1e-12;
+                                            }),
+                             emitted_fronts.end());
+        const auto emit = [&](double at) {
+            const double age = (seconds - at) * horizon / playback_seconds;
+            if (age > horizon + 1e-12 || emitted_fronts.size() >= 32) {
+                return;
+            }
+            const double angle =
+                std::fmod(starting_angle + (scan_playing ? scan_speed_grad_s * at : 0), 400.0);
+            const auto heading = static_cast<unsigned>(std::floor(angle + 1e-9)) % 400;
+            emitted_fronts.push_back(
+                {make_wavefront(config, heading, 8, 64), heading, scan_revision, age});
+        };
+        if (!emission_started) {
+            emit(0);
+            emission_started = true;
+        }
+        const double interval = 1.0 / emission_rate_hz();
+        const double first = interval - emission_phase_s;
+        if (seconds + 1e-12 >= first) {
+            const double count = std::floor((seconds - first + 1e-12) / interval) + 1;
+            const unsigned retained = static_cast<unsigned>(std::min(32.0, count));
+            for (unsigned sample = 0; sample < retained; ++sample) {
+                emit(first + (count - retained + sample) * interval);
+            }
+        }
+        emission_phase_s = std::fmod(emission_phase_s + seconds, interval);
+        if (interval - emission_phase_s < 1e-10) {
+            emission_phase_s = 0;
+        }
+    }
     advance_scan(seconds);
     if (playing) {
-        if (scan_playing) {
-            progress = std::fmod(progress + seconds / 5.0, 1.0);
+        const double advanced = progress + seconds / playback_seconds;
+        if (loop_playback) {
+            progress = std::fmod(advanced, 1.0);
         } else {
-            progress = std::min(1.0, progress + seconds / 5.0);
+            progress = std::min(1.0, advanced);
             if (progress == 1.0) {
                 playing = false;
             }
