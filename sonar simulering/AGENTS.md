@@ -90,3 +90,8 @@
 - `visualization/inference.*` consumes only combined profiles/acquisition widths;
   rectangular level-scan prior, no pool/pose/Echo truth. Keep raw and estimated gain
   identical. Partial/fallback results and coherent-ghost ambiguity are expected limits.
+
+- Current estimate/coords/route revision 150c7a2: optimized build-playback-opt 7/7
+  CTest and 1000×700 screenshot check. Filter strength changes cached inference/masks,
+  not gain or physics. Coordinates are paired-wall centre displacement, not a global map.
+  Route is 48 stationary ellipse snapshots at 0.5 s intervals; manual Move stops it.
