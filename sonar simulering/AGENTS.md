@@ -71,7 +71,7 @@
 - Current UI/front baseline `a658584c17e1a642dc8e0b24b95cdac80ec34cc0`: 5/5 CTest,
   review/format and multi-size render inspection passed; no complete GUI input automation.
   `layout.*` owns native sizing; model owns camera, scan clock and marker visibility.
-  The 6144-ray front uses analytic folds/seam links. Particle visibility is display-only.
+  Static front geometry uses analytic folds/seam links; animated snapshots use 8×64. Particle visibility is display-only.
 - Alignment/direction baseline `238c3c27482d5283f0014f45f5387a9c57f80a01`: 5/5 tests,
   independent review/format and screenshot checks. Alignment is full-pose sonar-local
   Top only; 3D remains pool-frame. Front arrows use folded propagation derivatives.
@@ -83,3 +83,10 @@
   Effective receiver radius is uncalibrated. Preserve API reciprocal compatibility.
 - Move release rebuilds one stationary scan and synchronizes draft pose. Wavefront
   remains an independent ideal one-way diagnostic, not the received-echo transport.
+
+- Playback/inference revision 0404a97 checked 2026-11-25: optimized build-vscode 6/6 CTest.
+  Immutable emissions retain launch geometry/age (max 32); Loop/display duration,
+  physical view window and TX pulse width have distinct meanings. Fade is a proxy.
+- `visualization/inference.*` consumes only combined profiles/acquisition widths;
+  rectangular level-scan prior, no pool/pose/Echo truth. Keep raw and estimated gain
+  identical. Partial/fallback results and coherent-ghost ambiguity are expected limits.
