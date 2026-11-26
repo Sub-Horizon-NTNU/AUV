@@ -1,6 +1,9 @@
 # Sonar simulation context
 
 - Read [README.md](README.md) for commands, equations, units and limits before changes.
+- For work resumed on another PC, use [AI/NOTES.md](../AI/NOTES.md) for the handoff and
+  [AI/TODO.md](../AI/TODO.md) for deferred work. Update the relevant entry when the
+  user defers a task or when a durable finding changes the next step.
 - Implemented scope: step 1 numerical Ping360 approximation and step 2 educational
   raylib viewer/configuration drafts. AUV dynamics, synthetic IMU/DVL and fusion
   remain later work requiring a new request.
