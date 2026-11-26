@@ -7,11 +7,46 @@
 - This folder's Norwegian name and root location are explicit user choices.
 - Source/comments/repository documentation use English. The established AUV wiki
   remains Norwegian under its project documentation convention.
-- Standards: engineering-standards v0.2.0, commit
-  `7b110ab27ae68c377d52870f3882eca33b5307e9`. Use
-  [subhorizon-engineering](https://github.com/Sub-Horizon-NTNU/engineering-standards/blob/7b110ab27ae68c377d52870f3882eca33b5307e9/skills/subhorizon-engineering/SKILL.md).
-  All nine sibling skills are installed on the current machine under
-  `C:/Users/luanl/.codex/skills`; elsewhere obtain the same complete revision.
+
+## When to read engineering skills
+
+For routine development (including setup, debugging, and small fixes), use the
+relevant project files and run the checks affected by the change. Start work
+directly. A possible later push, review, or documentation task does not trigger
+its skill during implementation.
+
+Read only the skill for the stage in scope, when that stage starts:
+
+| Stage | Skill |
+| --- | --- |
+| Explicit request to coordinate multiple roles | `subhorizon-engineering` |
+| C++ cleanup | `subhorizon-cpp` |
+| Documentation | `subhorizon-documentation` |
+| Code review, including review for a significant change being prepared for push or PR | `subhorizon-code-review` |
+
+For a routine push or PR, check the branch, diff, and relevant test results before
+publishing within the user's authorization. Read specialist skills only for
+stages that apply to the actual change.
+
+Resolve each name to `skills/<name>/SKILL.md` in
+[engineering-standards v0.2.0](https://github.com/Sub-Horizon-NTNU/engineering-standards/tree/7b110ab27ae68c377d52870f3882eca33b5307e9),
+or use its installed copy at that revision. See the local checkout under
+`~/.local/share/sonar-dev/engineering-standards` if present.
+
+## How much verification to run
+
+Pick the smallest check that can catch a plausible regression from the change,
+and run any checks required by the project or the user. For prose or instruction
+edits, inspect the diff and check any changed links or commands. For a narrow code
+change, start with the relevant existing test or smoke check. Broaden coverage
+when changes affect shared behavior or build tooling, when a failure needs
+diagnosis, or when the focused checks leave a material risk untested.
+
+Reuse passing results while the relevant code, inputs, and environment remain
+the same. Once the selected checks pass, stop. Rerun only affected checks after
+a relevant change or to investigate a failure. When preparing a push or PR,
+reuse results that still apply to the final diff. Add a test only when required
+or when existing coverage misses a concrete regression risk.
 
 ## Code owners and contracts
 
