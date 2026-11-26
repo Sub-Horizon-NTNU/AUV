@@ -94,7 +94,7 @@ Pulse width sets how far one arrival spreads in this model, and bin width sets h
 
 ![Polar plot of combined simulated returns across 400 headings, with wall-like traces and scattered points](figures/example-scan.png)
 
-Each radial slice is a profile from one stationary heading. The plot uses `total_intensity` from a scan of [the example pool](../examples/pool.cfg). For a bin with combined energy $E>0$, the plotted level uses the maximum combined energy $E_{\mathrm{peak}}$ across the entire scan.
+Each radial slice is a profile from one stationary heading. The plot uses `total_intensity` from a scan of [the example pool](../examples/pool.cfg) at revision `2c57e17`, before analytic single-wall returns were added. For a bin with combined energy $E>0$, the plotted level uses the maximum combined energy $E_{\mathrm{peak}}$ across the entire scan.
 
 $$
 D = 10\log_{10}\!\left(\frac{E}{E_{\mathrm{peak}}}\right)\,\mathrm{dB}.

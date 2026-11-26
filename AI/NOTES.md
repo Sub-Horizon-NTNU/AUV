@@ -15,7 +15,8 @@ Tool paths, generated VS Code settings, build caches and exported data are local
 - `sonar_core` traces a Ping360-style fan in a rectangular pool. The CLI exports paths, echoes and range profiles. The optional raylib viewer shows those results and fits candidate wall sections from the simulated scan.
 - The numerical API defaults to reciprocal returns. The example pool selects receiver-path tracing, roughness and particle scattering. The example parameters and energies are illustrative. Compare against measured data before drawing conclusions about real pool performance.
 - [Sonar theory](../sonar%20simulering/docs/sonar-theory.md) explains the physics and plots. The [system guide](../sonar%20simulering/docs/simulator-system.md) maps the numerical pipeline to code and includes a reproducible single-wall check.
-- At `0678ea1`, the documented wall example was run on Windows. It produced a 9.95 m return path, 4.975 m apparent range and one occupied bin at index 149. See the project instructions and simulator README for previous verification tied to their revisions.
+- The single-wall check now uses a 10 m centre-to-centre path and 5 m apparent range. The old result at `0678ea1` (9.95 m, 4.975 m) used sphere-entry timing. The numerical tests cover the new time reference and the grid-independent direct reflection.
+- [Numerical method and performance follow-ups](SONAR-FOLLOWUPS.md) records the comparison with published simulators and a path beyond the box model.
 
 ## Record a handoff
 

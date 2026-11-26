@@ -122,7 +122,8 @@ struct Echo {
     double relative_intensity{};
     bool in_receive_window{};
     // Complete route from TX to RX. ReceiverPaths routes are not constructed by reversal;
-    // specular capture terminates on the effective receiver sphere, others at its center.
+    // Sampled specular multipath ends at closest approach inside the effective
+    // aperture. Direct specular, diffuse and volume returns end at the center.
     std::vector<PathVertex> path;
     EchoKind kind{EchoKind::Surface};
     unsigned scatterer_id{}; // Meaningful only for Volume echoes; ray_id is then UINT_MAX.
@@ -155,12 +156,11 @@ struct Ping {
 /**
  * Deterministic geometric approximation for a stationary monostatic sonar.
  * Reciprocal (default) mode constructs a reversed backscatter route at every hit.
- * ReceiverPaths mode instead accepts a launched specular ray only when it intersects
- * the effective receiver sphere after reflection, plus diffuse next-event connections
- * directly or via one image-source wall. Both transmit and receive beam fans apply.
- * It retains the first coherent capture per ray and bounded diffuse branches, not all
- * possible return paths. Total route is limited to 2*max_range_m. Specular capture
- * times end on the aperture; next-event diffuse times end at the receiver center.
+ * ReceiverPaths mode evaluates single-wall specular returns analytically and
+ * samples higher-order specular returns using an effective receiver aperture.
+ * It also evaluates diffuse next-event connections directly or via one image-source
+ * wall. Both transmit and receive beam fans apply. The first eligible sampled
+ * specular return per launched ray is retained. Total route is limited to 2*max_range_m.
  * Optional volume echoes remain straight single-particle roundtrips. Surface shares,
  * aperture and scattering strengths are uncalibrated geometric energy approximations.
  * Interference, diffraction, side lobes and a frequency-dependent wave field are absent.

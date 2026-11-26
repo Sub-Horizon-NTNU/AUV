@@ -400,14 +400,12 @@ void receiver_specular_geometry() {
     check(echo.return_kind == sonar::ReturnKind::SpecularReceiver && echo.path.size() == 3 &&
               echo.interaction_count == 1 && !echo.is_multipath(),
           "capture stores its actual reflected route");
-    near(echo.total_path_m, 9.95,
-         "effective sphere entrance shortens the center roundtrip by its radius");
+    near(echo.total_path_m, 10, "normal specular path has a center-to-center round trip");
     near(echo.outbound_path_m, 5, "outbound distance to reflecting wall");
-    near(echo.return_path_m, 4.95, "return distance ends on the aperture");
-    near(echo.path.back().position_m.x, 5.05, "capture point is on the physical specular segment");
-    near(sonar::length(echo.path.back().position_m - config.pose.position_m), 0.05,
-         "capture terminates on the effective receiver sphere");
-    near(echo.travel_time_s, 9.95 / config.settings.sound_speed_m_s, "captured route timing");
+    near(echo.return_path_m, 5, "return distance ends at the receiver center");
+    near(sonar::length(echo.path.back().position_m - config.pose.position_m), 0,
+         "direct capture terminates at the receiver center");
+    near(echo.travel_time_s, 10 / config.settings.sound_speed_m_s, "captured route timing");
     near(echo.arrival_azimuth_deg, 0, "arrival bearing faces the emitting head");
     config.pose.yaw_deg = 30;
     check(sonar::simulate_ping(config, 0).echoes.empty(),
@@ -417,14 +415,40 @@ void receiver_specular_geometry() {
     check(sonar::simulate_ping(config, 0).echoes.empty(),
           "absorbing wall produces no received energy");
     config.pool.wall_reflection = 0.8;
-    config.settings.max_range_m = 4.97;
+    config.settings.max_range_m = 4.99;
     check(sonar::simulate_ping(config, 0).echoes.empty(),
           "total roundtrip beyond 2Rmax is rejected");
-    config.settings.max_range_m = 4.98;
+    config.settings.max_range_m = 5.01;
     const auto within = sonar::simulate_ping(config, 0);
     check(within.echoes.size() == 1 &&
-              within.echoes[0].outbound_path_m > config.settings.max_range_m,
-          "tracing is bounded by total route, not an incorrect Rmax outbound cutoff");
+              within.echoes[0].in_receive_window,
+          "an arrival just inside the range window contributes to the profile");
+}
+
+void specular_sampling_and_timing() {
+    auto config = receiver_fixture();
+    config.settings.horizontal_rays = 3;
+    config.settings.vertical_rays = 11;
+    const auto odd = sonar::simulate_ping(config, 0);
+    config.settings.vertical_rays = 12;
+    const auto even = sonar::simulate_ping(config, 0);
+    check(odd.echoes.size() == 1 && even.echoes.size() == 1,
+          "direct specular capture must survive an even grid that misses the wall normal");
+    check(odd.echoes[0].relative_intensity == even.echoes[0].relative_intensity,
+          "direct specular energy is independent of the angular grid");
+
+    config = receiver_fixture();
+    config.settings.max_outward_hits = 3;
+    for (const double radius : {0.025, 0.1}) {
+        config.settings.receiver_radius_m = radius;
+        const auto ping = sonar::simulate_ping(config, 0);
+        const auto multi = std::find_if(ping.echoes.begin(), ping.echoes.end(),
+                                        [](const auto &echo) { return echo.is_multipath(); });
+        check(multi != ping.echoes.end() && multi->interaction_count == 3,
+              "normal ray can return again after three wall contacts");
+        near(multi->total_path_m, 30, "higher-order arrival uses closest approach, not sphere entry");
+        near(multi->apparent_range_m, 15, "capture radius does not shorten the apparent range");
+    }
 }
 
 void receiver_diffuse_routes() {
@@ -562,6 +586,7 @@ int main() {
         {"roughness surface model", roughness_surface_model},
         {"volume scattering", volume_scattering},
         {"receiver specular geometry", receiver_specular_geometry},
+        {"specular sampling and timing", specular_sampling_and_timing},
         {"receiver diffuse routes", receiver_diffuse_routes},
         {"receiver path invariants", receiver_path_invariants},
     };

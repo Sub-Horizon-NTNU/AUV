@@ -241,6 +241,12 @@ Vec3 face_normal(unsigned face) {
     return face / 2 == 0 ? Vec3{sign, 0, 0} : face / 2 == 1 ? Vec3{0, sign, 0} : Vec3{0, 0, sign};
 }
 
+double specular_energy(const Config &config, double fraction, double survival, double total_m) {
+    return fraction * survival *
+           std::pow(reference_range_m / std::max(reference_range_m, total_m / 2), 4) *
+           std::exp(-config.settings.absorption_per_m * total_m);
+}
+
 void receive_path(const Config &config, Ping &ping, std::vector<PathVertex> path, unsigned ray_id,
                   double azimuth_deg, double elevation_deg, unsigned outward_hits,
                   unsigned total_hits, double outbound_m, double return_m, double energy,
@@ -271,6 +277,39 @@ void receive_path(const Config &config, Ping &ping, std::vector<PathVertex> path
     echo.arrival_elevation_deg = arrival.second;
     accumulate_profile(config, echo, ping.profile);
     ping.echoes.push_back(std::move(echo));
+}
+
+// A flat wall's monostatic specular path is normal to the wall. Evaluate it
+// independently of the angular grid used for diffuse and higher-order returns.
+void receive_single_wall_specular(const Config &config, Ping &ping) {
+    const auto receiver = config.pose.position_m;
+    const double fan_solid_angle = horizontal_beam_width_deg * degrees_to_radians *
+                                   2 * std::sin(vertical_beam_width_deg * degrees_to_radians / 2);
+    const auto first_ray_id = config.settings.horizontal_rays * config.settings.vertical_rays;
+    for (unsigned face = 0; face < 6; ++face) {
+        const auto direction = face_normal(face);
+        if (!receiver_beam(direction, config, ping.angle_grad)) {
+            continue;
+        }
+        const auto hit = next_hit(receiver, direction, config.pool);
+        const double total_m = 2 * hit.distance_m;
+        if (total_m > 2 * config.settings.max_range_m) {
+            continue;
+        }
+        // The mirrored aperture subtends a cone at the transmitter. Approximate
+        // its overlap with the fan by evaluating the fan at the cone axis.
+        const double ratio = config.settings.receiver_radius_m / total_m;
+        const double cone_solid_angle =
+            2 * pi * ratio * ratio / (1 + std::sqrt(1 - ratio * ratio));
+        const double fraction = std::min(1.0, cone_solid_angle / fan_solid_angle);
+        const double survival =
+            reflection_coefficient(hit.primary, config.pool) * coherent_share(config.settings, 1);
+        const auto angles = local_angles(direction, config.pose);
+        receive_path(config, ping, {{receiver, 0}, {hit.position_m, hit.mask}, {receiver, 0}},
+                     first_ray_id + face, angles.first, angles.second, 1, 1, hit.distance_m,
+                     hit.distance_m, specular_energy(config, fraction, survival, total_m),
+                     ReturnKind::SpecularReceiver);
+    }
 }
 
 // First-order image-source return. The mirrored receiver defines the specular
@@ -387,27 +426,22 @@ void trace_receiver_ray(const Config &config, Vec3 direction, unsigned ray_id, d
         const auto hit = next_hit(current, direction, config.pool);
         const double available =
             std::min(hit.distance_m, 2 * config.settings.max_range_m - traveled);
-        if (hits > 0) {
+        if (hits > 1) {
             const auto offset = current - config.pose.position_m;
-            const double b = dot(offset, direction);
-            const double discriminant =
-                b * b - dot(offset, offset) +
-                config.settings.receiver_radius_m * config.settings.receiver_radius_m;
-            if (discriminant >= 0) {
-                const double entry = -b - std::sqrt(discriminant);
-                if (entry > 1e-10 && entry <= available &&
+            const double closest_m = -dot(offset, direction);
+            if (closest_m > 1e-10 && closest_m <= available) {
+                const auto miss = offset + direction * closest_m;
+                const double radius = config.settings.receiver_radius_m;
+                if (dot(miss, miss) <= radius * radius &&
                     receiver_beam(direction * -1, config, ping.angle_grad)) {
                     auto received = path;
-                    received.push_back({current + direction * entry, 0});
-                    const double total = traveled + entry;
-                    const double energy =
-                        ray_weight * survival *
-                        std::pow(reference_range_m / std::max(reference_range_m, total / 2), 4) *
-                        std::exp(-config.settings.absorption_per_m * total);
+                    received.push_back({current + direction * closest_m, 0});
+                    const auto energy =
+                        specular_energy(config, ray_weight, survival, traveled + closest_m);
                     receive_path(config, ping, std::move(received), ray_id, azimuth_deg,
-                                 elevation_deg, hits, hits, traveled, entry, energy,
+                                 elevation_deg, hits, hits, traveled, closest_m, energy,
                                  ReturnKind::SpecularReceiver);
-                    return; // One accepted coherent receiver encounter per launched ray.
+                    return; // Retain the first eligible higher-order capture.
                 }
             }
         }
@@ -674,6 +708,9 @@ Ping simulate_ping(const Config &config, unsigned angle_grad) {
                                    std::cos(elevation) / total_weight, ping);
             }
         }
+    }
+    if (config.settings.return_model == ReturnModel::ReceiverPaths) {
+        receive_single_wall_specular(config, ping);
     }
     scatter_volume(config, angle_grad, ping);
     for (auto &echo : ping.echoes) {

@@ -21,7 +21,7 @@ flowchart LR
 
 1. `simulate_ping(Config, angle_grad)` validates the pool, pose, sonar settings and integer heading (0–399). It creates a grid of range bins that span zero to `max_range_m`. The receiver gate starts at 0.75 m.
 2. The core samples the local beam at weighted angular midpoints and rotates each launch direction into pool coordinates. Pool coordinates have Z up and the floor at Z=0. Heading zero points along sonar-local +X and positive angles rotate toward local +Y. Roll, pitch and yaw rotate the sonar frame as a whole.
-3. Each ray marches between intersections with the pool's box faces. In `receiver_paths`, the mode used by [pool.cfg](../examples/pool.cfg), a specular return must intersect the effective receiver sphere and satisfy the receive fan. A diffuse return can connect to the receiver centre directly or via one extra reflection when enabled. This mode counts contacts over the whole path. In the API's default `reciprocal` mode, each outward contact can generate an echo by reversing the route. Seeded scatterers optionally contribute straight particle returns.
+3. Each ray marches between intersections with the pool's box faces. In `receiver_paths`, the mode used by [pool.cfg](../examples/pool.cfg), single-wall specular returns use the wall normal analytically. Specular paths with multiple wall hits use the sampled rays and effective aperture. A diffuse return can connect to the receiver centre directly or via one extra reflection when enabled. This mode counts contacts over the whole path. In the API's default `reciprocal` mode, each outward contact can generate an echo by reversing the route. Seeded scatterers optionally contribute straight particle returns.
 4. Accepted routes carry vertices, path length, travel time, apparent range and relative energy. The core integrates the in-window arrivals into separate direct, multipath and volume channels. A one-contact surface echo is direct, and a surface echo with more contacts is multipath. The data model keeps particle echoes in their own channel.
 
 The numerical API lives in [simulator.hpp](../include/sonar/simulator.hpp), with the ray, reflection and profile calculations in [simulator.cpp](../src/simulator.cpp). It is deterministic for the same inputs and has no graphics or file dependencies.
@@ -66,17 +66,17 @@ Edge and corner hits can tie numerically. The core marks all faces within the ti
 
 ### Decide whether an echo reaches the receiver
 
-In `receiver_paths`, `trace_receiver_ray` checks capture on each leg *after* at least one contact. Let $\mathbf m=\mathbf p-\mathbf p_{\mathrm{rx}}$ be the ray origin relative to the receiver centre, and $a_{\mathrm{rx}}$ the effective receiver radius. Solving for the first intersection with the sphere gives
+In `receiver_paths`, the monostatic specular path from a single flat wall travels along its normal. `receive_single_wall_specular` tests that direction against the beam and evaluates the centre-to-wall-to-centre route analytically. It assigns synthetic ray IDs after the angular grid, offset by face index.
+
+For two or more wall contacts, `trace_receiver_ray` uses the angular grid. Let $\mathbf m=\mathbf p-\mathbf p_{\mathrm{rx}}$ be the ray origin relative to the receiver centre, and $a_{\mathrm{rx}}$ the effective receiver radius. The closest point on the extended ray is at
 
 $$
-b = \mathbf m\cdot\mathbf d,
+s_* = -\mathbf m\cdot\mathbf d,
 \qquad
-\Delta = b^2-\|\mathbf m\|^2+a_{\mathrm{rx}}^2,
-\qquad
-s_{\mathrm{entry}} = -b-\sqrt{\Delta}.
+d_{\mathrm{miss}} = \|\mathbf m+s_*\mathbf d\|.
 $$
 
-The entry must be real, forward and on the available segment before the next wall or the round-trip length limit. The code also checks that the arrival direction, viewed from the receiver in its local frame, lies within ±1° in azimuth of the head and ±12.5° in elevation. The stored route ends at the sphere entry point. The first accepted coherent capture ends that ray's trace.
+The point must lie forward on the available segment before the next wall or the round-trip length limit, with $d_{\mathrm{miss}}\leq a_{\mathrm{rx}}$. The arrival direction, viewed from the receiver in its local frame, must lie within ±1° in azimuth of the head and ±12.5° in elevation. The stored route ends at that closest point and its distance sets the arrival time. The first eligible higher-order capture ends that sampled ray's trace.
 
 At each outward wall contact, `diffuse_connections` also tries a direct route to the receiver centre. When enabled, it tries one additional reflection by mirroring the receiver across a candidate wall, intersecting the segment to that image with the wall plane, then using the actual wall point on the return. The extra hit must lie within the face, the diffuse leg must leave into the pool, and the arrival must pass the same angular gate. The limit `max_outward_hits` applies to the **sum of outbound and return contacts** in this mode. In `reciprocal` mode it limits the outward contacts only, and the return route is constructed by copying the outbound vertices in reverse.
 
@@ -90,14 +90,16 @@ $$
 S = \exp\!\left[-\left(\frac{4\pi\sigma\mu}{\lambda}\right)^2\right].
 $$
 
-For a coherent return of length $L$, `trace_receiver_ray` applies that accumulated survival $P$, a spreading factor with reference distance $r_0=1\,\mathrm m$, and absorption:
+For a coherent return of length $L$, the energy uses the captured transmit fraction $F$, accumulated survival $P$, a spreading factor with reference distance $r_0=1\,\mathrm m$, and absorption:
 
 $$
 I_{\mathrm{spec}}
-= w_{ij}\,P
+= F\,P
   \left(\frac{r_0}{\max(r_0,L/2)}\right)^4
   \exp(-\alpha L).
 $$
+
+For sampled multipath, $F$ is the angular cell weight $w_{ij}$. For an analytic single-wall return, the image of the receiver aperture subtends a cone at the transmitter. Its solid angle is $2\pi(1-\sqrt{1-(a_{\mathrm{rx}}/L)^2})$. The code divides this by the fan solid angle and caps the result at one. It gates the cone axis, so partial overlap near the fan edge remains an approximation.
 
 A diffuse return uses $R(1-S)B$ in roughness mode, where $B$ is the configured backscatter fraction. It also includes the incoming and outgoing incidence cosines, inverse-square outbound spreading with the same distance clamp, and an aperture factor $a_{\mathrm{rx}}^2/(4L_{\mathrm{ret}}^2)$. For the optional extra return reflection it multiplies by the corresponding $R S$. The legacy receiver-path model instead uses $S=1-B$ for coherent continuation and $RB$ for the diffuse surface term. Particle returns use their own per-particle strength, straight round trips and fan/range checks, independent of the ray count. All these strength terms are modelling choices requiring calibration for quantitative comparisons.
 
@@ -132,18 +134,18 @@ max_outward_hits=1
 The remaining settings use the API defaults. The sonar is centred at $(5,2.5,1.5)\,\mathrm m$ in the $10\times5\times3\,\mathrm m$ pool, with a 0.05 m aperture and zero particles.
 
 1. The ray goes along +X for 5 m and hits the wall at X=10 m. Normal reflection sends it back along −X.
-2. The return enters the sphere at X=5.05 m, after 4.95 m of return travel. It should produce exactly one direct specular echo.
-3. The echo should arrive at 6.723 ms and appear at 4.975 m.
+2. The return reaches the receiver centre at X=5 m, after 5 m of return travel. It should produce exactly one direct specular echo.
+3. The echo should arrive at approximately 6.757 ms and appear at 5 m.
 
 $$
-L = 5.00\,\mathrm m+4.95\,\mathrm m=9.95\,\mathrm m,
+L = 5\,\mathrm m+5\,\mathrm m=10\,\mathrm m,
 \qquad
-t=\frac{9.95\,\mathrm m}{1480\,\mathrm{m/s}},
+t=\frac{10\,\mathrm m}{1480\,\mathrm{m/s}},
 \qquad
-r=\frac{9.95\,\mathrm m}{2}.
+r=\frac{10\,\mathrm m}{2}.
 $$
 
-With 600 bins over 20 m and a 20 µs pulse, the interval from 4.975 m to 4.9898 m lies within bin 149. That bin should contain all the echo's relative energy in the direct channel. In the compatibility model, the comparable centre-to-centre route is 10 m long and appears at 5 m. The 2.5 cm difference in apparent range comes from where the model terminates the ray.
+With 600 bins over 20 m and a 20 µs pulse, the interval from 5 m to 5.0148 m lies within bin 150. That bin should contain all the echo's relative energy in the direct channel. Changing the angular sampling grid leaves this specular return's timing and energy unchanged.
 
 The [numerical tests](../tests/test_simulator.cpp) include this capture geometry in `receiver_specular_geometry` and check normal-incidence reciprocal lengths and energy in `normal_wall_and_multipath`. For an exported scan, an independent check is to sum the Euclidean distances between consecutive CSV path vertices and compare with `total_path_m`, then compare `travel_time_s` to $L/c$ and `apparent_range_m` to $L/2$. Check that the three channels sum to `total_intensity` per bin. These checks can establish that the geometry, timing and profile calculations agree with the specified model. Assessing how well the model represents the pool requires measured traces.
 

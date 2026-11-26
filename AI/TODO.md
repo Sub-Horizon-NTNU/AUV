@@ -4,7 +4,9 @@ Record work here when it is deferred to another PC or session. Add the next conc
 
 ## Deferred work
 
-No user-selected tasks recorded yet.
+- [ ] Use mirrored-receiver reference paths to measure higher-order capture error and study fan overlap for direct returns. See [method and validation notes](SONAR-FOLLOWUPS.md).
+- [ ] Profile the 400-heading scan before choosing performance work. See [performance notes](SONAR-FOLLOWUPS.md#performance).
+- [ ] Plan the first non-box validation scene with one submerged obstacle and a known acoustic shadow. See [advanced validation notes](SONAR-FOLLOWUPS.md#validation-beyond-the-pool).
 
 <!-- Entry format: - [ ] Task. Next: concrete action. Needs: dependency, if any. -->
 

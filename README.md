@@ -12,7 +12,7 @@ The `sonar` branch contains the standalone C++17 Ping360 numerical simulator.
 - [Project wiki](https://github.com/Sub-Horizon-NTNU/AUV/wiki/Sonar-simulering)
 
 Step 1 provides numerical echo paths and range profiles for a configurable rectangular pool.
-The model uses a limited reciprocal-backscatter approximation and has not been calibrated
-against pool measurements. Step 2 compares ray paths, a simulated 400-angle sonar image
+The model supports reciprocal backscatter and geometry-based receiver paths with
+analytic single-wall specular returns. Pool calibration is pending. Step 2 compares ray paths, a simulated 400-angle sonar image
 and a coarse geometric wavefront, with optional surface/particle scattering.
 Synthetic IMU/DVL data and sensor fusion remain later steps.
